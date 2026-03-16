@@ -16,9 +16,12 @@ import (
 func TestMain(m *testing.M) {
 	// Initialize the logger before any tests run
 	log.Initialize(false)
-	defer log.Close()
+
+	// Prevent CLAUDE_SQUAD_HOME from polluting tests
+	os.Unsetenv("CLAUDE_SQUAD_HOME")
 
 	exitCode := m.Run()
+	log.Close()
 	os.Exit(exitCode)
 }
 
@@ -113,15 +116,83 @@ func TestDefaultConfig(t *testing.T) {
 }
 
 func TestGetConfigDir(t *testing.T) {
-	t.Run("returns valid config directory", func(t *testing.T) {
+	t.Run("returns default config directory when env var not set", func(t *testing.T) {
+		originalEnv := os.Getenv("CLAUDE_SQUAD_HOME")
+		os.Unsetenv("CLAUDE_SQUAD_HOME")
+		defer os.Setenv("CLAUDE_SQUAD_HOME", originalEnv)
+
 		configDir, err := GetConfigDir()
 
 		assert.NoError(t, err)
 		assert.NotEmpty(t, configDir)
 		assert.True(t, strings.HasSuffix(configDir, ".claude-squad"))
-
-		// Verify it's an absolute path
 		assert.True(t, filepath.IsAbs(configDir))
+	})
+
+	t.Run("uses CLAUDE_SQUAD_HOME when set", func(t *testing.T) {
+		customDir := t.TempDir()
+		os.Setenv("CLAUDE_SQUAD_HOME", customDir)
+		defer os.Unsetenv("CLAUDE_SQUAD_HOME")
+
+		configDir, err := GetConfigDir()
+
+		assert.NoError(t, err)
+		assert.Equal(t, customDir, configDir)
+	})
+
+	t.Run("CLAUDE_SQUAD_HOME takes precedence over HOME", func(t *testing.T) {
+		customDir := t.TempDir()
+		os.Setenv("CLAUDE_SQUAD_HOME", customDir)
+		defer os.Unsetenv("CLAUDE_SQUAD_HOME")
+
+		originalHome := os.Getenv("HOME")
+		os.Setenv("HOME", t.TempDir())
+		defer os.Setenv("HOME", originalHome)
+
+		configDir, err := GetConfigDir()
+
+		assert.NoError(t, err)
+		assert.Equal(t, customDir, configDir)
+	})
+
+	t.Run("expands tilde in CLAUDE_SQUAD_HOME", func(t *testing.T) {
+		originalHome := os.Getenv("HOME")
+		tempHome := t.TempDir()
+		os.Setenv("HOME", tempHome)
+		defer os.Setenv("HOME", originalHome)
+
+		os.Setenv("CLAUDE_SQUAD_HOME", "~/.my-claude-squad")
+		defer os.Unsetenv("CLAUDE_SQUAD_HOME")
+
+		configDir, err := GetConfigDir()
+
+		assert.NoError(t, err)
+		assert.Equal(t, filepath.Join(tempHome, ".my-claude-squad"), configDir)
+	})
+
+	t.Run("expands bare tilde in CLAUDE_SQUAD_HOME", func(t *testing.T) {
+		originalHome := os.Getenv("HOME")
+		tempHome := t.TempDir()
+		os.Setenv("HOME", tempHome)
+		defer os.Setenv("HOME", originalHome)
+
+		os.Setenv("CLAUDE_SQUAD_HOME", "~")
+		defer os.Unsetenv("CLAUDE_SQUAD_HOME")
+
+		configDir, err := GetConfigDir()
+
+		assert.NoError(t, err)
+		assert.Equal(t, tempHome, configDir)
+	})
+
+	t.Run("rejects relative path in CLAUDE_SQUAD_HOME", func(t *testing.T) {
+		os.Setenv("CLAUDE_SQUAD_HOME", "relative/path")
+		defer os.Unsetenv("CLAUDE_SQUAD_HOME")
+
+		_, err := GetConfigDir()
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "CLAUDE_SQUAD_HOME must be an absolute path")
 	})
 }
 

@@ -17,8 +17,24 @@ const (
 	defaultProgram = "claude"
 )
 
-// GetConfigDir returns the path to the application's configuration directory
+// GetConfigDir returns the path to the application's configuration directory.
+// If CLAUDE_SQUAD_HOME is set, that value is used directly as the config directory.
+// The value must be an absolute path (after ~ expansion). Falls back to ~/.claude-squad.
 func GetConfigDir() (string, error) {
+	if envDir := os.Getenv("CLAUDE_SQUAD_HOME"); envDir != "" {
+		if envDir == "~" || strings.HasPrefix(envDir, "~/") {
+			homeDir, err := os.UserHomeDir()
+			if err != nil {
+				return "", fmt.Errorf("failed to expand ~ in CLAUDE_SQUAD_HOME: %w", err)
+			}
+			envDir = filepath.Join(homeDir, envDir[1:])
+		}
+		if !filepath.IsAbs(envDir) {
+			return "", fmt.Errorf("CLAUDE_SQUAD_HOME must be an absolute path, got: %s", envDir)
+		}
+		return envDir, nil
+	}
+
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("failed to get config home directory: %w", err)
