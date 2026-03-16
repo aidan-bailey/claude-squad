@@ -63,6 +63,9 @@ type List struct {
 	// map of repo name to number of instances using it. Used to display the repo name only if there are
 	// multiple repos in play.
 	repos map[string]int
+
+	// workspaceName is the current workspace name, shown in the title
+	workspaceName string
 }
 
 func NewList(spinner *spinner.Model, autoYes bool) *List {
@@ -95,6 +98,11 @@ func (l *List) SetSessionPreviewSize(width, height int) (err error) {
 		}
 	}
 	return
+}
+
+// SetWorkspaceName sets the workspace name displayed in the title.
+func (l *List) SetWorkspaceName(name string) {
+	l.workspaceName = name
 }
 
 func (l *List) NumInstances() int {
@@ -226,7 +234,10 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 }
 
 func (l *List) String() string {
-	const titleText = " Instances "
+	titleText := " Instances "
+	if l.workspaceName != "" {
+		titleText = fmt.Sprintf(" %s ", l.workspaceName)
+	}
 	const autoYesText = " auto-yes "
 
 	// Write the title.

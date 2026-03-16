@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
@@ -43,7 +44,45 @@ var (
 				return fmt.Errorf("failed to get current directory: %w", err)
 			}
 
-			if !git.IsGitRepo(currentDir) {
+			// Workspace detection: if workspaces are registered, try to auto-select
+			// or prompt the user, then set CLAUDE_SQUAD_HOME accordingly.
+			registry, regErr := config.LoadWorkspaceRegistry()
+			if regErr != nil {
+				log.ErrorLog.Printf("failed to load workspace registry: %v", regErr)
+			}
+
+			if regErr == nil && len(registry.Workspaces) > 0 {
+				if ws := registry.FindByPath(currentDir); ws != nil {
+					// Auto-select workspace matching cwd
+					os.Setenv("CLAUDE_SQUAD_HOME", config.WorkspaceConfigDir(ws))
+					_ = registry.UpdateLastUsed(ws.Name)
+				} else {
+					// Prompt user to select a workspace
+					fmt.Println("Select a workspace:")
+					for i, ws := range registry.Workspaces {
+						marker := "  "
+						if ws.Name == registry.LastUsed {
+							marker = "* "
+						}
+						fmt.Printf("  %s%d. %s (%s)\n", marker, i+1, ws.Name, ws.Path)
+					}
+					fmt.Printf("  %d. Global (default)\n", len(registry.Workspaces)+1)
+					fmt.Print("\nChoice: ")
+
+					var choice int
+					if _, err := fmt.Scanf("%d", &choice); err != nil || choice < 1 || choice > len(registry.Workspaces)+1 {
+						return fmt.Errorf("invalid selection")
+					}
+
+					if choice <= len(registry.Workspaces) {
+						selected := &registry.Workspaces[choice-1]
+						os.Setenv("CLAUDE_SQUAD_HOME", config.WorkspaceConfigDir(selected))
+						_ = registry.UpdateLastUsed(selected.Name)
+					}
+					// else: global (no env var set)
+				}
+			} else if !git.IsGitRepo(currentDir) {
+				// Only enforce git repo requirement when no workspaces are registered
 				return fmt.Errorf("error: claude-squad must be run from within a git repository")
 			}
 

@@ -2,6 +2,7 @@ package app
 
 import (
 	"claude-squad/config"
+	"claude-squad/daemon"
 	"claude-squad/keys"
 	"claude-squad/log"
 	"claude-squad/session"
@@ -44,6 +45,8 @@ const (
 	stateHelp
 	// stateConfirm is the state when a confirmation modal is displayed.
 	stateConfirm
+	// stateWorkspace is the state when the workspace picker is displayed.
+	stateWorkspace
 )
 
 type home struct {
@@ -93,6 +96,10 @@ type home struct {
 	textOverlay *overlay.TextOverlay
 	// confirmationOverlay displays confirmation modals
 	confirmationOverlay *overlay.ConfirmationOverlay
+	// workspacePicker displays the workspace selection overlay
+	workspacePicker *overlay.WorkspacePicker
+	// workspaceName is the name of the current workspace (empty = global)
+	workspaceName string
 }
 
 func newHome(ctx context.Context, program string, autoYes bool) *home {
@@ -137,6 +144,19 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		h.list.AddInstance(instance)()
 		if autoYes {
 			instance.AutoYes = true
+		}
+	}
+
+	// Detect active workspace name from CLAUDE_SQUAD_HOME
+	if envDir := os.Getenv("CLAUDE_SQUAD_HOME"); envDir != "" {
+		if reg, err := config.LoadWorkspaceRegistry(); err == nil {
+			for _, ws := range reg.Workspaces {
+				if config.WorkspaceConfigDir(&ws) == envDir {
+					h.workspaceName = ws.Name
+					h.list.SetWorkspaceName(ws.Name)
+					break
+				}
+			}
 		}
 	}
 
@@ -254,6 +274,14 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textInputOverlay.SetBranchResults(msg.branches, msg.version)
 		}
 		return m, nil
+	case workspaceReloadMsg:
+		m.reload(msg.workspace)
+		if m.autoYes {
+			if err := daemon.LaunchDaemon(); err != nil {
+				log.ErrorLog.Printf("failed to launch daemon: %v", err)
+			}
+		}
+		return m, m.Init()
 	case tea.KeyMsg:
 		return m.handleKeyPress(msg)
 	case tea.WindowSizeMsg:
@@ -321,7 +349,7 @@ func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly 
 		m.keySent = false
 		return nil, false
 	}
-	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm {
+	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm || m.state == stateWorkspace {
 		return nil, false
 	}
 	// If it's in the global keymap, we should try to highlight it.
@@ -525,6 +553,23 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, m.scheduleBranchSearch(filter, version)
 		}
 
+		return m, nil
+	}
+
+	// Handle workspace picker state
+	if m.state == stateWorkspace {
+		selected, canceled := m.workspacePicker.HandleKeyPress(msg)
+		if canceled {
+			m.state = stateDefault
+			m.workspacePicker = nil
+			return m, nil
+		}
+		if selected {
+			ws := m.workspacePicker.GetSelectedWorkspace()
+			m.workspacePicker = nil
+			m.state = stateDefault
+			return m, m.switchWorkspace(ws)
+		}
 		return m, nil
 	}
 
@@ -756,6 +801,14 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			m.state = stateDefault
 		})
 		return m, nil
+	case keys.KeyWorkspace:
+		registry, err := config.LoadWorkspaceRegistry()
+		if err != nil || len(registry.Workspaces) == 0 {
+			return m, m.handleError(fmt.Errorf("no workspaces registered"))
+		}
+		m.workspacePicker = overlay.NewWorkspacePicker(registry.Workspaces, m.workspaceName)
+		m.state = stateWorkspace
+		return m, nil
 	default:
 		return m, nil
 	}
@@ -812,6 +865,10 @@ type instanceStartedMsg struct {
 	err             error
 	promptAfterName bool
 	selectedBranch  string
+}
+
+type workspaceReloadMsg struct {
+	workspace *config.Workspace
 }
 
 // branchSearchDebounceMsg fires after the debounce interval to trigger a search.
@@ -917,6 +974,68 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 	return nil
 }
 
+// switchWorkspace saves current state, stops daemon, sets the env var, and returns
+// a tea.Cmd that triggers a reload.
+func (m *home) switchWorkspace(ws *config.Workspace) tea.Cmd {
+	return func() tea.Msg {
+		// Save current state
+		if m.storage != nil {
+			_ = m.storage.SaveInstances(m.list.GetInstances())
+		}
+		// Stop daemon for current workspace
+		_ = daemon.StopDaemon()
+		// Swap env
+		if ws == nil {
+			os.Unsetenv("CLAUDE_SQUAD_HOME")
+		} else {
+			os.Setenv("CLAUDE_SQUAD_HOME", config.WorkspaceConfigDir(ws))
+			reg, _ := config.LoadWorkspaceRegistry()
+			if reg != nil {
+				_ = reg.UpdateLastUsed(ws.Name)
+			}
+		}
+		return workspaceReloadMsg{workspace: ws}
+	}
+}
+
+// reload re-initializes app state for a new workspace.
+func (m *home) reload(ws *config.Workspace) {
+	m.appConfig = config.LoadConfig()
+	appState := config.LoadState()
+	m.appState = appState
+	storage, err := session.NewStorage(appState)
+	if err != nil {
+		log.ErrorLog.Printf("reload storage error: %v", err)
+		return
+	}
+	m.storage = storage
+
+	instances, _ := storage.LoadInstances()
+	m.list = ui.NewList(&m.spinner, m.autoYes)
+	for _, inst := range instances {
+		m.list.AddInstance(inst)()
+		if m.autoYes {
+			inst.AutoYes = true
+		}
+	}
+
+	m.tabbedWindow = ui.NewTabbedWindow(
+		ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane())
+	m.state = stateDefault
+	m.textInputOverlay = nil
+	m.textOverlay = nil
+	m.confirmationOverlay = nil
+	m.workspacePicker = nil
+
+	if ws != nil {
+		m.workspaceName = ws.Name
+		m.list.SetWorkspaceName(ws.Name)
+	} else {
+		m.workspaceName = ""
+		m.list.SetWorkspaceName("")
+	}
+}
+
 func (m *home) View() string {
 	listWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.list.String())
 	previewWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.tabbedWindow.String())
@@ -944,6 +1063,11 @@ func (m *home) View() string {
 			log.ErrorLog.Printf("confirmation overlay is nil")
 		}
 		return overlay.PlaceOverlay(0, 0, m.confirmationOverlay.Render(), mainView, true, true)
+	} else if m.state == stateWorkspace {
+		if m.workspacePicker == nil {
+			log.ErrorLog.Printf("workspace picker is nil")
+		}
+		return overlay.PlaceOverlay(0, 0, m.workspacePicker.Render(), mainView, true, true)
 	}
 
 	return mainView

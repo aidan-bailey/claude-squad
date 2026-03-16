@@ -53,6 +53,7 @@ func (h helpTypeGeneral) toContent() string {
 		keyStyle.Render("r")+descStyle.Render("         - Resume a paused session"),
 		"",
 		headerStyle.Render("Other:"),
+		keyStyle.Render("W")+descStyle.Render("         - Switch workspace"),
 		keyStyle.Render("tab")+descStyle.Render("       - Switch between preview, diff, and terminal tabs"),
 		keyStyle.Render("shift-↓/↑")+descStyle.Render(" - Scroll in preview/diff/terminal view"),
 		keyStyle.Render("q")+descStyle.Render("         - Quit the application"),
