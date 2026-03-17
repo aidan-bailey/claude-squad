@@ -100,6 +100,8 @@ type home struct {
 	workspacePicker *overlay.WorkspacePicker
 	// workspaceName is the name of the current workspace (empty = global)
 	workspaceName string
+	// pendingAction stores the action to execute after confirmation
+	pendingAction tea.Cmd
 }
 
 func newHome(ctx context.Context, program string, autoYes bool) *home {
@@ -577,9 +579,11 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	if m.state == stateConfirm {
 		shouldClose := m.confirmationOverlay.HandleKeyPress(msg)
 		if shouldClose {
-			m.state = stateDefault
+			cmd := m.pendingAction
+			m.pendingAction = nil
 			m.confirmationOverlay = nil
-			return m, nil
+			m.state = stateDefault
+			return m, cmd
 		}
 		return m, nil
 	}
@@ -952,6 +956,7 @@ func (m *home) cancelPromptOverlay() tea.Cmd {
 // confirmAction shows a confirmation modal and stores the action to execute on confirm
 func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 	m.state = stateConfirm
+	m.pendingAction = action
 
 	// Create and show the confirmation overlay using ConfirmationOverlay
 	m.confirmationOverlay = overlay.NewConfirmationOverlay(message)
@@ -959,16 +964,8 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 	m.confirmationOverlay.SetWidth(50)
 
 	// Set callbacks for confirmation and cancellation
-	m.confirmationOverlay.OnConfirm = func() {
-		m.state = stateDefault
-		// Execute the action if it exists
-		if action != nil {
-			_ = action()
-		}
-	}
-
 	m.confirmationOverlay.OnCancel = func() {
-		m.state = stateDefault
+		m.pendingAction = nil
 	}
 
 	return nil
@@ -1051,21 +1048,25 @@ func (m *home) View() string {
 	if m.state == statePrompt {
 		if m.textInputOverlay == nil {
 			log.ErrorLog.Printf("text input overlay is nil")
+			return mainView
 		}
 		return overlay.PlaceOverlay(0, 0, m.textInputOverlay.Render(), mainView, true, true)
 	} else if m.state == stateHelp {
 		if m.textOverlay == nil {
 			log.ErrorLog.Printf("text overlay is nil")
+			return mainView
 		}
 		return overlay.PlaceOverlay(0, 0, m.textOverlay.Render(), mainView, true, true)
 	} else if m.state == stateConfirm {
 		if m.confirmationOverlay == nil {
 			log.ErrorLog.Printf("confirmation overlay is nil")
+			return mainView
 		}
 		return overlay.PlaceOverlay(0, 0, m.confirmationOverlay.Render(), mainView, true, true)
 	} else if m.state == stateWorkspace {
 		if m.workspacePicker == nil {
 			log.ErrorLog.Printf("workspace picker is nil")
+			return mainView
 		}
 		return overlay.PlaceOverlay(0, 0, m.workspacePicker.Render(), mainView, true, true)
 	}

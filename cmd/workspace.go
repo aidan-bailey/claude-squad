@@ -207,8 +207,12 @@ var workspaceMigrateCmd = &cobra.Command{
 			}
 
 			added := 0
-			for j, raw := range rawInsts {
-				if !existingTitles[instances[j].Title] {
+			for _, raw := range rawInsts {
+				var inst migrateInstanceData
+				if err := json.Unmarshal(raw, &inst); err != nil {
+					continue
+				}
+				if !existingTitles[inst.Title] {
 					// Update worktree path if it's under the global dir
 					var instMap map[string]interface{}
 					if err := json.Unmarshal(raw, &instMap); err == nil {
