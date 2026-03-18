@@ -49,6 +49,18 @@ const (
 	stateWorkspace
 )
 
+// workspaceSlot bundles per-workspace state so multiple workspaces can be
+// loaded in memory simultaneously.
+type workspaceSlot struct {
+	workspace    config.Workspace
+	configDir    string
+	storage      *session.Storage
+	appConfig    *config.Config
+	appState     config.AppState
+	list         *ui.List
+	tabbedWindow *ui.TabbedWindow
+}
+
 type home struct {
 	ctx context.Context
 
@@ -102,6 +114,18 @@ type home struct {
 	workspaceName string
 	// pendingAction stores the action to execute after confirmation
 	pendingAction tea.Cmd
+
+	// -- Workspace slots --
+
+	// slots holds per-workspace state for all active workspaces
+	slots []workspaceSlot
+	// focusedSlot is the index into slots for the currently displayed workspace
+	focusedSlot int
+	// tabBar renders workspace tabs at the top of the TUI
+	tabBar *ui.WorkspaceTabBar
+	// lastWidth and lastHeight cache the terminal size for sizing new slots
+	lastWidth  int
+	lastHeight int
 }
 
 func newHome(ctx context.Context, program string, autoYes bool) *home {
@@ -130,6 +154,7 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		autoYes:      autoYes,
 		state:        stateDefault,
 		appState:     appState,
+		tabBar:       ui.NewWorkspaceTabBar(),
 	}
 	h.list = ui.NewList(&h.spinner, autoYes)
 
@@ -560,17 +585,12 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 	// Handle workspace picker state
 	if m.state == stateWorkspace {
-		selected, canceled := m.workspacePicker.HandleKeyPress(msg)
-		if canceled {
-			m.state = stateDefault
-			m.workspacePicker = nil
-			return m, nil
-		}
-		if selected {
-			ws := m.workspacePicker.GetSelectedWorkspace()
+		committed, _ := m.workspacePicker.HandleKeyPress(msg)
+		if committed {
+			desired := m.workspacePicker.GetActiveWorkspaces()
 			m.workspacePicker = nil
 			m.state = stateDefault
-			return m, m.switchWorkspace(ws)
+			return m, m.applyWorkspaceToggle(desired)
 		}
 		return m, nil
 	}
@@ -810,9 +830,29 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if err != nil || len(registry.Workspaces) == 0 {
 			return m, m.handleError(fmt.Errorf("no workspaces registered"))
 		}
-		m.workspacePicker = overlay.NewWorkspacePicker(registry.Workspaces, m.workspaceName)
+		activeNames := make(map[string]bool, len(m.slots))
+		for _, slot := range m.slots {
+			activeNames[slot.workspace.Name] = true
+		}
+		m.workspacePicker = overlay.NewWorkspacePicker(registry.Workspaces, activeNames)
 		m.state = stateWorkspace
 		return m, nil
+	case keys.KeyWorkspaceLeft:
+		if len(m.slots) <= 1 {
+			return m, nil
+		}
+		m.saveCurrentSlot()
+		newIdx := (m.focusedSlot - 1 + len(m.slots)) % len(m.slots)
+		m.loadSlot(newIdx)
+		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
+	case keys.KeyWorkspaceRight:
+		if len(m.slots) <= 1 {
+			return m, nil
+		}
+		m.saveCurrentSlot()
+		newIdx := (m.focusedSlot + 1) % len(m.slots)
+		m.loadSlot(newIdx)
+		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
 	default:
 		return m, nil
 	}
@@ -1031,6 +1071,157 @@ func (m *home) reload(ws *config.Workspace) {
 		m.workspaceName = ""
 		m.list.SetWorkspaceName("")
 	}
+}
+
+// activateWorkspace loads a workspace's state, config, instances and UI
+// components, appending a new slot to m.slots.
+func (m *home) activateWorkspace(ws config.Workspace) error {
+	configDir := config.WorkspaceConfigDir(&ws)
+	state := config.LoadStateFrom(configDir)
+	appConfig := config.LoadConfigFrom(configDir)
+	storage, err := session.NewStorage(state)
+	if err != nil {
+		return fmt.Errorf("failed to create storage for workspace %s: %w", ws.Name, err)
+	}
+
+	instances, _ := storage.LoadInstances()
+	list := ui.NewList(&m.spinner, m.autoYes)
+	for _, inst := range instances {
+		list.AddInstance(inst)()
+		if m.autoYes {
+			inst.AutoYes = true
+		}
+	}
+	list.SetWorkspaceName(ws.Name)
+
+	tabbedWindow := ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane())
+
+	// Pre-size components if terminal dimensions are known.
+	if m.lastWidth > 0 && m.lastHeight > 0 {
+		listWidth := int(float32(m.lastWidth) * 0.3)
+		tabsWidth := m.lastWidth - listWidth
+		contentHeight := int(float32(m.lastHeight)*0.9) - m.tabBar.Height()
+		list.SetSize(listWidth, contentHeight)
+		tabbedWindow.SetSize(tabsWidth, contentHeight)
+	}
+
+	m.slots = append(m.slots, workspaceSlot{
+		workspace:    ws,
+		configDir:    configDir,
+		storage:      storage,
+		appConfig:    appConfig,
+		appState:     state,
+		list:         list,
+		tabbedWindow: tabbedWindow,
+	})
+	return nil
+}
+
+// deactivateWorkspace saves and removes a workspace slot by name.
+func (m *home) deactivateWorkspace(name string) {
+	idx := -1
+	for i, slot := range m.slots {
+		if slot.workspace.Name == name {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return
+	}
+
+	slot := m.slots[idx]
+	_ = slot.storage.SaveInstances(slot.list.GetInstances())
+
+	m.slots = append(m.slots[:idx], m.slots[idx+1:]...)
+
+	if m.focusedSlot >= len(m.slots) && len(m.slots) > 0 {
+		m.focusedSlot = len(m.slots) - 1
+	} else if m.focusedSlot > idx {
+		m.focusedSlot--
+	}
+}
+
+// saveCurrentSlot writes the home's active UI fields back into the focused slot.
+func (m *home) saveCurrentSlot() {
+	if len(m.slots) == 0 {
+		return
+	}
+	s := &m.slots[m.focusedSlot]
+	s.list = m.list
+	s.tabbedWindow = m.tabbedWindow
+	s.storage = m.storage
+	s.appConfig = m.appConfig
+	s.appState = m.appState
+}
+
+// loadSlot copies a slot's fields onto home and updates CLAUDE_SQUAD_HOME.
+func (m *home) loadSlot(idx int) {
+	if idx < 0 || idx >= len(m.slots) {
+		return
+	}
+	slot := m.slots[idx]
+	m.focusedSlot = idx
+	m.list = slot.list
+	m.tabbedWindow = slot.tabbedWindow
+	m.storage = slot.storage
+	m.appConfig = slot.appConfig
+	m.appState = slot.appState
+	m.workspaceName = slot.workspace.Name
+	os.Setenv("CLAUDE_SQUAD_HOME", slot.configDir)
+	m.list.SetWorkspaceName(slot.workspace.Name)
+	m.tabBar.SetWorkspaces(m.slotNames(), m.focusedSlot)
+}
+
+// applyWorkspaceToggle diffs the current slots against the desired list,
+// activating and deactivating workspaces as needed.
+func (m *home) applyWorkspaceToggle(desired []config.Workspace) tea.Cmd {
+	m.saveCurrentSlot()
+
+	desiredNames := make(map[string]bool, len(desired))
+	for _, ws := range desired {
+		desiredNames[ws.Name] = true
+	}
+
+	// Deactivate slots not in desired (reverse order to keep indices stable).
+	for i := len(m.slots) - 1; i >= 0; i-- {
+		if !desiredNames[m.slots[i].workspace.Name] {
+			m.deactivateWorkspace(m.slots[i].workspace.Name)
+		}
+	}
+
+	// Activate workspaces not already in slots.
+	currentNames := make(map[string]bool, len(m.slots))
+	for _, slot := range m.slots {
+		currentNames[slot.workspace.Name] = true
+	}
+	for _, ws := range desired {
+		if !currentNames[ws.Name] {
+			if err := m.activateWorkspace(ws); err != nil {
+				log.ErrorLog.Printf("failed to activate workspace %s: %v", ws.Name, err)
+			}
+		}
+	}
+
+	// Load focused slot (or first available).
+	if len(m.slots) > 0 {
+		if m.focusedSlot >= len(m.slots) {
+			m.focusedSlot = 0
+		}
+		m.loadSlot(m.focusedSlot)
+	}
+
+	m.tabBar.SetWorkspaces(m.slotNames(), m.focusedSlot)
+	return tea.WindowSize()
+}
+
+// slotNames returns the names of all active workspace slots.
+func (m *home) slotNames() []string {
+	names := make([]string, len(m.slots))
+	for i, slot := range m.slots {
+		names[i] = slot.workspace.Name
+	}
+	return names
 }
 
 func (m *home) View() string {

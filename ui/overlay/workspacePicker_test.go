@@ -13,81 +13,85 @@ func TestWorkspacePickerNavigation(t *testing.T) {
 		{Name: "alpha", Path: "/a"},
 		{Name: "beta", Path: "/b"},
 	}
+	active := map[string]bool{"alpha": true}
 
 	t.Run("starts at first item", func(t *testing.T) {
-		p := NewWorkspacePicker(workspaces, "")
-		ws := p.GetSelectedWorkspace()
-		assert.NotNil(t, ws)
-		assert.Equal(t, "alpha", ws.Name)
+		p := NewWorkspacePicker(workspaces, active)
+		assert.Equal(t, 0, p.cursor)
 	})
 
 	t.Run("moves down", func(t *testing.T) {
-		p := NewWorkspacePicker(workspaces, "")
+		p := NewWorkspacePicker(workspaces, active)
 		p.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
-		ws := p.GetSelectedWorkspace()
-		assert.NotNil(t, ws)
-		assert.Equal(t, "beta", ws.Name)
+		assert.Equal(t, 1, p.cursor)
 	})
 
-	t.Run("moves to global option", func(t *testing.T) {
-		p := NewWorkspacePicker(workspaces, "")
+	t.Run("does not go below last item", func(t *testing.T) {
+		p := NewWorkspacePicker(workspaces, active)
 		p.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 		p.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
-		ws := p.GetSelectedWorkspace()
-		assert.Nil(t, ws) // Global = nil
-	})
-
-	t.Run("does not go below global", func(t *testing.T) {
-		p := NewWorkspacePicker(workspaces, "")
-		p.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
-		p.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
-		p.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
-		ws := p.GetSelectedWorkspace()
-		assert.Nil(t, ws) // Still on Global
+		assert.Equal(t, 1, p.cursor)
 	})
 
 	t.Run("moves up", func(t *testing.T) {
-		p := NewWorkspacePicker(workspaces, "")
+		p := NewWorkspacePicker(workspaces, active)
 		p.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 		p.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
-		ws := p.GetSelectedWorkspace()
-		assert.NotNil(t, ws)
-		assert.Equal(t, "alpha", ws.Name)
+		assert.Equal(t, 0, p.cursor)
 	})
 
 	t.Run("does not go above first item", func(t *testing.T) {
-		p := NewWorkspacePicker(workspaces, "")
+		p := NewWorkspacePicker(workspaces, active)
 		p.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
-		ws := p.GetSelectedWorkspace()
-		assert.NotNil(t, ws)
-		assert.Equal(t, "alpha", ws.Name)
+		assert.Equal(t, 0, p.cursor)
 	})
 }
 
-func TestWorkspacePickerSelection(t *testing.T) {
+func TestWorkspacePickerToggle(t *testing.T) {
 	workspaces := []config.Workspace{
 		{Name: "alpha", Path: "/a"},
+		{Name: "beta", Path: "/b"},
 	}
+	active := map[string]bool{"alpha": true}
 
-	t.Run("enter selects", func(t *testing.T) {
-		p := NewWorkspacePicker(workspaces, "")
-		selected, canceled := p.HandleKeyPress(tea.KeyMsg{Type: tea.KeyEnter})
-		assert.True(t, selected)
-		assert.False(t, canceled)
+	t.Run("space toggles active state", func(t *testing.T) {
+		p := NewWorkspacePicker(workspaces, active)
+		// Alpha is active, toggle it off
+		committed, _ := p.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+		assert.False(t, committed)
+		result := p.GetActiveWorkspaces()
+		assert.Empty(t, result)
 	})
 
-	t.Run("esc cancels", func(t *testing.T) {
-		p := NewWorkspacePicker(workspaces, "")
-		selected, canceled := p.HandleKeyPress(tea.KeyMsg{Type: tea.KeyEsc})
-		assert.False(t, selected)
-		assert.True(t, canceled)
+	t.Run("enter toggles active state", func(t *testing.T) {
+		p := NewWorkspacePicker(workspaces, active)
+		// Move to beta and toggle it on
+		p.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+		committed, _ := p.HandleKeyPress(tea.KeyMsg{Type: tea.KeyEnter})
+		assert.False(t, committed)
+		result := p.GetActiveWorkspaces()
+		assert.Len(t, result, 2)
 	})
 
-	t.Run("q cancels", func(t *testing.T) {
-		p := NewWorkspacePicker(workspaces, "")
-		selected, canceled := p.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
-		assert.False(t, selected)
-		assert.True(t, canceled)
+	t.Run("esc commits", func(t *testing.T) {
+		p := NewWorkspacePicker(workspaces, active)
+		committed, _ := p.HandleKeyPress(tea.KeyMsg{Type: tea.KeyEsc})
+		assert.True(t, committed)
+	})
+
+	t.Run("q commits", func(t *testing.T) {
+		p := NewWorkspacePicker(workspaces, active)
+		committed, _ := p.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+		assert.True(t, committed)
+	})
+
+	t.Run("does not mutate input map", func(t *testing.T) {
+		inputActive := map[string]bool{"alpha": true}
+		p := NewWorkspacePicker(workspaces, inputActive)
+		p.HandleKeyPress(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+		assert.True(t, inputActive["alpha"])
+		result := p.GetActiveWorkspaces()
+		assert.Empty(t, result)
 	})
 }
 
@@ -96,19 +100,20 @@ func TestWorkspacePickerRender(t *testing.T) {
 		{Name: "alpha", Path: "/a"},
 		{Name: "beta", Path: "/b"},
 	}
+	active := map[string]bool{"alpha": true}
 
-	t.Run("renders with current workspace marked", func(t *testing.T) {
-		p := NewWorkspacePicker(workspaces, "alpha")
+	t.Run("renders with active workspace checked", func(t *testing.T) {
+		p := NewWorkspacePicker(workspaces, active)
 		output := p.Render()
 		assert.Contains(t, output, "alpha")
 		assert.Contains(t, output, "beta")
-		assert.Contains(t, output, "Global")
-		assert.Contains(t, output, "*") // current marker
+		assert.Contains(t, output, "[x]")
+		assert.Contains(t, output, "[ ]")
 	})
 
-	t.Run("renders global marked when no current workspace", func(t *testing.T) {
-		p := NewWorkspacePicker(workspaces, "")
+	t.Run("renders toggle help text", func(t *testing.T) {
+		p := NewWorkspacePicker(workspaces, active)
 		output := p.Render()
-		assert.Contains(t, output, "Global")
+		assert.Contains(t, output, "toggle")
 	})
 }

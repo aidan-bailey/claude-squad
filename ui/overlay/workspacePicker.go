@@ -8,26 +8,31 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// WorkspacePicker is an overlay that lets the user select a workspace.
+// WorkspacePicker is an overlay that lets the user toggle active workspaces.
 type WorkspacePicker struct {
 	workspaces []config.Workspace
 	cursor     int
 	width      int
-	currentWs  string // name of active workspace, highlighted differently
+	active     map[string]bool
 }
 
 // NewWorkspacePicker creates a workspace picker overlay.
-func NewWorkspacePicker(workspaces []config.Workspace, currentName string) *WorkspacePicker {
+// activeNames is a set of workspace names that are currently active.
+func NewWorkspacePicker(workspaces []config.Workspace, activeNames map[string]bool) *WorkspacePicker {
+	active := make(map[string]bool, len(activeNames))
+	for k, v := range activeNames {
+		active[k] = v
+	}
 	return &WorkspacePicker{
 		workspaces: workspaces,
 		cursor:     0,
 		width:      50,
-		currentWs:  currentName,
+		active:     active,
 	}
 }
 
-// HandleKeyPress processes navigation and selection keys.
-// Returns (selected, canceled).
+// HandleKeyPress processes navigation and toggle keys.
+// Returns (committed, _). committed=true means the overlay should close and apply state.
 func (w *WorkspacePicker) HandleKeyPress(msg tea.KeyMsg) (bool, bool) {
 	switch msg.String() {
 	case "up", "k":
@@ -35,35 +40,40 @@ func (w *WorkspacePicker) HandleKeyPress(msg tea.KeyMsg) (bool, bool) {
 			w.cursor--
 		}
 	case "down", "j":
-		if w.cursor < len(w.workspaces) {
+		if w.cursor < len(w.workspaces)-1 {
 			w.cursor++
 		}
-	case "enter":
-		return true, false
+	case " ", "enter":
+		if w.cursor < len(w.workspaces) {
+			name := w.workspaces[w.cursor].Name
+			w.active[name] = !w.active[name]
+		}
 	case "esc", "q":
-		return false, true
+		return true, false
 	}
 	return false, false
 }
 
-// GetSelectedWorkspace returns the selected workspace, or nil if "Global" is selected.
-func (w *WorkspacePicker) GetSelectedWorkspace() *config.Workspace {
-	if w.cursor >= len(w.workspaces) {
-		return nil // "Global" option
+// GetActiveWorkspaces returns workspaces that are currently toggled on.
+func (w *WorkspacePicker) GetActiveWorkspaces() []config.Workspace {
+	var result []config.Workspace
+	for _, ws := range w.workspaces {
+		if w.active[ws.Name] {
+			result = append(result, ws)
+		}
 	}
-	return &w.workspaces[w.cursor]
+	return result
 }
 
 // Render renders the workspace picker overlay.
 func (w *WorkspacePicker) Render() string {
 	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7D56F4"))
-	activeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#51bd73")).Bold(true)
 	selectedStyle := lipgloss.NewStyle().Background(lipgloss.Color("#dde4f0")).Foreground(lipgloss.Color("#1a1a1a"))
 	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF"))
 	pathStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#777777"))
 
 	var content string
-	content += titleStyle.Render("Switch Workspace") + "\n\n"
+	content += titleStyle.Render("Toggle Workspaces") + "\n\n"
 
 	for i, ws := range w.workspaces {
 		cursor := "  "
@@ -71,45 +81,25 @@ func (w *WorkspacePicker) Render() string {
 			cursor = "> "
 		}
 
-		name := ws.Name
-		if ws.Name == w.currentWs {
-			name += " *"
+		check := "[ ]"
+		if w.active[ws.Name] {
+			check = "[x]"
 		}
 
-		line := fmt.Sprintf("%s%s", cursor, name)
-		path := fmt.Sprintf("  %s", ws.Path)
+		line := fmt.Sprintf("%s%s %s", cursor, check, ws.Name)
+		path := fmt.Sprintf("      %s", ws.Path)
 
 		if i == w.cursor {
 			content += selectedStyle.Render(line) + "\n"
 			content += selectedStyle.Render(path) + "\n"
-		} else if ws.Name == w.currentWs {
-			content += activeStyle.Render(line) + "\n"
-			content += pathStyle.Render(path) + "\n"
 		} else {
 			content += normalStyle.Render(line) + "\n"
 			content += pathStyle.Render(path) + "\n"
 		}
 	}
 
-	// "Global" option
-	globalCursor := "  "
-	if w.cursor == len(w.workspaces) {
-		globalCursor = "> "
-	}
-	globalLine := fmt.Sprintf("%sGlobal (default)", globalCursor)
-	if w.currentWs == "" {
-		globalLine += " *"
-	}
-	if w.cursor == len(w.workspaces) {
-		content += selectedStyle.Render(globalLine) + "\n"
-	} else if w.currentWs == "" {
-		content += activeStyle.Render(globalLine) + "\n"
-	} else {
-		content += normalStyle.Render(globalLine) + "\n"
-	}
-
 	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#777777"))
-	content += "\n" + helpStyle.Render("↑/↓ navigate • enter select • esc cancel")
+	content += "\n" + helpStyle.Render("space toggle • esc done")
 
 	border := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
