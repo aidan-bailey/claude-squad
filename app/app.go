@@ -2,7 +2,6 @@ package app
 
 import (
 	"claude-squad/config"
-	"claude-squad/daemon"
 	"claude-squad/keys"
 	"claude-squad/log"
 	"claude-squad/session"
@@ -174,15 +173,14 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		}
 	}
 
-	// Detect active workspace name from CLAUDE_SQUAD_HOME
-	if envDir := os.Getenv("CLAUDE_SQUAD_HOME"); envDir != "" {
-		if reg, err := config.LoadWorkspaceRegistry(); err == nil {
-			for _, ws := range reg.Workspaces {
-				if config.WorkspaceConfigDir(&ws) == envDir {
-					h.workspaceName = ws.Name
-					h.list.SetWorkspaceName(ws.Name)
-					break
-				}
+	// Auto-activate workspace matching cwd.
+	cwd, _ := os.Getwd()
+	if reg, err := config.LoadWorkspaceRegistry(); err == nil {
+		if ws := reg.FindByPath(cwd); ws != nil {
+			if err := h.activateWorkspace(*ws); err != nil {
+				log.ErrorLog.Printf("failed to activate workspace %s: %v", ws.Name, err)
+			} else {
+				h.loadSlot(0)
 			}
 		}
 	}
@@ -193,14 +191,18 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 // updateHandleWindowSizeEvent sets the sizes of the components.
 // The components will try to render inside their bounds.
 func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
+	m.lastWidth = msg.Width
+	m.lastHeight = msg.Height
+	m.tabBar.SetWidth(msg.Width)
+
 	// List takes 30% of width, preview takes 70%
 	listWidth := int(float32(msg.Width) * 0.3)
 	tabsWidth := msg.Width - listWidth
 
 	// Menu takes 10% of height, list and window take 90%
-	contentHeight := int(float32(msg.Height) * 0.9)
-	menuHeight := msg.Height - contentHeight - 1     // minus 1 for error box
-	m.errBox.SetSize(int(float32(msg.Width)*0.9), 1) // error box takes 1 row
+	contentHeight := int(float32(msg.Height)*0.9) - m.tabBar.Height()
+	menuHeight := msg.Height - contentHeight - m.tabBar.Height() - 1 // minus 1 for error box
+	m.errBox.SetSize(int(float32(msg.Width)*0.9), 1)                 // error box takes 1 row
 
 	m.tabbedWindow.SetSize(tabsWidth, contentHeight)
 	m.list.SetSize(listWidth, contentHeight)
@@ -249,7 +251,20 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.menu.ClearKeydown()
 		return m, nil
 	case tickUpdateMetadataMessage:
-		for _, instance := range m.list.GetInstances() {
+		// Collect instances from all workspace slots (focused uses m.list).
+		var allInstances []*session.Instance
+		if len(m.slots) > 0 {
+			for i, slot := range m.slots {
+				if i == m.focusedSlot {
+					allInstances = append(allInstances, m.list.GetInstances()...)
+				} else {
+					allInstances = append(allInstances, slot.list.GetInstances()...)
+				}
+			}
+		} else {
+			allInstances = m.list.GetInstances()
+		}
+		for _, instance := range allInstances {
 			if !instance.Started() || instance.Paused() {
 				continue
 			}
@@ -301,14 +316,6 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textInputOverlay.SetBranchResults(msg.branches, msg.version)
 		}
 		return m, nil
-	case workspaceReloadMsg:
-		m.reload(msg.workspace)
-		if m.autoYes {
-			if err := daemon.LaunchDaemon(); err != nil {
-				log.ErrorLog.Printf("failed to launch daemon: %v", err)
-			}
-		}
-		return m, m.Init()
 	case tea.KeyMsg:
 		return m.handleKeyPress(msg)
 	case tea.WindowSizeMsg:
@@ -363,8 +370,17 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *home) handleQuit() (tea.Model, tea.Cmd) {
-	if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
-		return m, m.handleError(err)
+	if len(m.slots) > 0 {
+		m.saveCurrentSlot()
+		for _, slot := range m.slots {
+			if err := slot.storage.SaveInstances(slot.list.GetInstances()); err != nil {
+				log.ErrorLog.Printf("failed to save workspace %s: %v", slot.workspace.Name, err)
+			}
+		}
+	} else {
+		if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+			return m, m.handleError(err)
+		}
 	}
 	return m, tea.Quit
 }
@@ -911,10 +927,6 @@ type instanceStartedMsg struct {
 	selectedBranch  string
 }
 
-type workspaceReloadMsg struct {
-	workspace *config.Workspace
-}
-
 // branchSearchDebounceMsg fires after the debounce interval to trigger a search.
 type branchSearchDebounceMsg struct {
 	filter  string
@@ -1009,68 +1021,6 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 	}
 
 	return nil
-}
-
-// switchWorkspace saves current state, stops daemon, sets the env var, and returns
-// a tea.Cmd that triggers a reload.
-func (m *home) switchWorkspace(ws *config.Workspace) tea.Cmd {
-	return func() tea.Msg {
-		// Save current state
-		if m.storage != nil {
-			_ = m.storage.SaveInstances(m.list.GetInstances())
-		}
-		// Stop daemon for current workspace
-		_ = daemon.StopDaemon()
-		// Swap env
-		if ws == nil {
-			os.Unsetenv("CLAUDE_SQUAD_HOME")
-		} else {
-			os.Setenv("CLAUDE_SQUAD_HOME", config.WorkspaceConfigDir(ws))
-			reg, _ := config.LoadWorkspaceRegistry()
-			if reg != nil {
-				_ = reg.UpdateLastUsed(ws.Name)
-			}
-		}
-		return workspaceReloadMsg{workspace: ws}
-	}
-}
-
-// reload re-initializes app state for a new workspace.
-func (m *home) reload(ws *config.Workspace) {
-	m.appConfig = config.LoadConfig()
-	appState := config.LoadState()
-	m.appState = appState
-	storage, err := session.NewStorage(appState)
-	if err != nil {
-		log.ErrorLog.Printf("reload storage error: %v", err)
-		return
-	}
-	m.storage = storage
-
-	instances, _ := storage.LoadInstances()
-	m.list = ui.NewList(&m.spinner, m.autoYes)
-	for _, inst := range instances {
-		m.list.AddInstance(inst)()
-		if m.autoYes {
-			inst.AutoYes = true
-		}
-	}
-
-	m.tabbedWindow = ui.NewTabbedWindow(
-		ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane())
-	m.state = stateDefault
-	m.textInputOverlay = nil
-	m.textOverlay = nil
-	m.confirmationOverlay = nil
-	m.workspacePicker = nil
-
-	if ws != nil {
-		m.workspaceName = ws.Name
-		m.list.SetWorkspaceName(ws.Name)
-	} else {
-		m.workspaceName = ""
-		m.list.SetWorkspaceName("")
-	}
 }
 
 // activateWorkspace loads a workspace's state, config, instances and UI
@@ -1229,11 +1179,15 @@ func (m *home) View() string {
 	previewWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.tabbedWindow.String())
 	listAndPreview := lipgloss.JoinHorizontal(lipgloss.Top, listWithPadding, previewWithPadding)
 
+	sections := []string{}
+	if tabBarStr := m.tabBar.String(); tabBarStr != "" {
+		sections = append(sections, tabBarStr)
+	}
+	sections = append(sections, listAndPreview, m.menu.String(), m.errBox.String())
+
 	mainView := lipgloss.JoinVertical(
 		lipgloss.Center,
-		listAndPreview,
-		m.menu.String(),
-		m.errBox.String(),
+		sections...,
 	)
 
 	if m.state == statePrompt {
