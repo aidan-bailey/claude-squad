@@ -665,15 +665,15 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 
 		// Start a background fetch so branches are up to date by the time the picker opens
+		repoDir := m.repoPath()
 		fetchCmd := func() tea.Msg {
-			currentDir, _ := os.Getwd()
-			git.FetchBranches(currentDir)
+			git.FetchBranches(repoDir)
 			return nil
 		}
 
 		instance, err := session.NewInstance(session.InstanceOptions{
 			Title:   "",
-			Path:    ".",
+			Path:    repoDir,
 			Program: m.program,
 		})
 		if err != nil {
@@ -694,7 +694,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 		instance, err := session.NewInstance(session.InstanceOptions{
 			Title:   "",
-			Path:    ".",
+			Path:    m.repoPath(),
 			Program: m.program,
 		})
 		if err != nil {
@@ -951,9 +951,9 @@ func (m *home) scheduleBranchSearch(filter string, version uint64) tea.Cmd {
 
 // runBranchSearch returns a tea.Cmd that performs the git search in the background.
 func (m *home) runBranchSearch(filter string, version uint64) tea.Cmd {
+	repoDir := m.repoPath()
 	return func() tea.Msg {
-		currentDir, _ := os.Getwd()
-		branches, err := git.SearchBranches(currentDir, filter)
+		branches, err := git.SearchBranches(repoDir, filter)
 		if err != nil {
 			log.WarningLog.Printf("branch search failed: %v", err)
 			return nil
@@ -1021,6 +1021,19 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 	}
 
 	return nil
+}
+
+// repoPath returns the git repository path for the current context.
+// When a workspace is active it returns the workspace's registered path;
+// otherwise it falls back to the process working directory.
+func (m *home) repoPath() string {
+	if len(m.slots) > 0 && m.focusedSlot >= 0 && m.focusedSlot < len(m.slots) {
+		if p := m.slots[m.focusedSlot].workspace.Path; p != "" {
+			return p
+		}
+	}
+	cwd, _ := os.Getwd()
+	return cwd
 }
 
 // activateWorkspace loads a workspace's state, config, instances and UI
