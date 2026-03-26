@@ -51,6 +51,8 @@ const (
 	stateConfirm
 	// stateWorkspace is the state when the workspace picker is displayed.
 	stateWorkspace
+	// stateQuickInteract is the state when the quick input bar is displayed.
+	stateQuickInteract
 )
 
 // workspaceSlot bundles per-workspace state so multiple workspaces can be
@@ -101,6 +103,8 @@ type home struct {
 	menu *ui.Menu
 	// tabbedWindow displays the tabbed window with preview and diff panes
 	tabbedWindow *ui.TabbedWindow
+	// quickInputBar displays the inline input bar for quick interactions
+	quickInputBar *ui.QuickInputBar
 	// errBox displays error messages
 	errBox *ui.ErrBox
 	// global spinner instance. we plumb this down to where it's needed
@@ -229,7 +233,12 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	menuHeight := msg.Height - contentHeight - m.tabBar.Height() - 1 // minus 1 for error box
 	m.errBox.SetSize(int(float32(msg.Width)*0.9), 1)                 // error box takes 1 row
 
-	m.tabbedWindow.SetSize(tabsWidth, contentHeight)
+	quickInputHeight := 0
+	if m.state == stateQuickInteract && m.quickInputBar != nil {
+		quickInputHeight = m.quickInputBar.Height()
+		m.quickInputBar.SetWidth(ui.AdjustPreviewWidth(tabsWidth))
+	}
+	m.tabbedWindow.SetSize(tabsWidth, contentHeight-quickInputHeight)
 	m.list.SetSize(listWidth, contentHeight)
 
 	if m.textInputOverlay != nil {
@@ -437,7 +446,7 @@ func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly 
 		m.keySent = false
 		return nil, false
 	}
-	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm || m.state == stateWorkspace {
+	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm || m.state == stateWorkspace || m.state == stateQuickInteract {
 		return nil, false
 	}
 	// If it's in the global keymap, we should try to highlight it.
@@ -641,6 +650,52 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, m.scheduleBranchSearch(filter, version)
 		}
 
+		return m, nil
+	}
+
+	if m.state == stateQuickInteract {
+		if m.quickInputBar == nil {
+			m.state = stateDefault
+			return m, nil
+		}
+
+		selected := m.list.GetSelectedInstance()
+		if selected == nil || selected.Paused() || !selected.TmuxAlive() {
+			m.quickInputBar = nil
+			m.state = stateDefault
+			m.menu.SetState(ui.StateDefault)
+			return m, tea.WindowSize()
+		}
+
+		action := m.quickInputBar.HandleKeyPress(msg)
+		switch action {
+		case ui.QuickInputSubmit:
+			text := m.quickInputBar.Value()
+			if m.tabbedWindow.IsInTerminalTab() {
+				if err := m.tabbedWindow.SendTerminalPrompt(text); err != nil {
+					m.quickInputBar = nil
+					m.state = stateDefault
+					m.menu.SetState(ui.StateDefault)
+					return m, tea.Batch(tea.WindowSize(), m.handleError(err))
+				}
+			} else {
+				if err := selected.SendPrompt(text); err != nil {
+					m.quickInputBar = nil
+					m.state = stateDefault
+					m.menu.SetState(ui.StateDefault)
+					return m, tea.Batch(tea.WindowSize(), m.handleError(err))
+				}
+			}
+			m.quickInputBar = nil
+			m.state = stateDefault
+			m.menu.SetState(ui.StateDefault)
+			return m, tea.WindowSize()
+		case ui.QuickInputCancel:
+			m.quickInputBar = nil
+			m.state = stateDefault
+			m.menu.SetState(ui.StateDefault)
+			return m, tea.WindowSize()
+		}
 		return m, nil
 	}
 
@@ -936,6 +991,18 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		newIdx := (m.focusedSlot + 1) % len(m.slots)
 		m.loadSlot(newIdx)
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
+	case keys.KeyQuickInteract:
+		selected := m.list.GetSelectedInstance()
+		if selected == nil || selected.Paused() || !selected.TmuxAlive() || selected.Status == session.Loading {
+			return m, nil
+		}
+		if m.tabbedWindow.IsInDiffTab() {
+			return m, nil
+		}
+		m.state = stateQuickInteract
+		m.quickInputBar = ui.NewQuickInputBar()
+		m.menu.SetState(ui.StateQuickInteract)
+		return m, tea.WindowSize()
 	default:
 		return m, nil
 	}
@@ -1311,7 +1378,11 @@ func (m *home) slotNames() []string {
 
 func (m *home) View() string {
 	listWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.list.String())
-	previewWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.tabbedWindow.String())
+	rightContent := m.tabbedWindow.String()
+	if m.state == stateQuickInteract && m.quickInputBar != nil {
+		rightContent = lipgloss.JoinVertical(lipgloss.Left, rightContent, m.quickInputBar.View())
+	}
+	previewWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(rightContent)
 	listAndPreview := lipgloss.JoinHorizontal(lipgloss.Top, listWithPadding, previewWithPadding)
 
 	sections := []string{}
