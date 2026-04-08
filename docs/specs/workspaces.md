@@ -76,13 +76,14 @@ The `.claude-squad/` directory is automatically added to the repo's `.gitignore`
 
 ## Isolation Mechanism
 
-Workspaces achieve isolation through the `CLAUDE_SQUAD_HOME` environment variable.
+Workspaces achieve isolation through explicit `WorkspaceContext` propagation.
 
-1. When a workspace is selected, `CLAUDE_SQUAD_HOME` is set to `{workspace_path}/.claude-squad/`.
-2. `config.GetConfigDir()` returns `CLAUDE_SQUAD_HOME` when set, otherwise `~/.claude-squad/`.
-3. All state reads/writes (config, instances, worktrees) go through `GetConfigDir()`.
+1. On startup, `ResolveWorkspace(cwd, registry)` returns a `WorkspaceContext` with the matching workspace's `ConfigDir`.
+2. The `WorkspaceContext` is threaded through `app.Run` → `newHome` → all downstream functions (storage, worktree creation, daemon).
+3. All state reads/writes use the context's `ConfigDir` directly via `LoadConfigFrom(dir)` / `LoadStateFrom(dir)`.
+4. `GetConfigDir()` still reads `CLAUDE_SQUAD_HOME` as a backward-compatible fallback for external tooling, but internal code passes config directories explicitly.
 
-This means there is no explicit instance filtering — each workspace simply loads from its own state file. Switching workspaces swaps the config directory.
+This means there is no explicit instance filtering — each workspace simply loads from its own state file. Switching workspaces swaps the active `WorkspaceContext`.
 
 The workspace registry (`workspaces.json`) is the one exception: it always reads from `~/.claude-squad/` via `GetGlobalConfigDir()`, since it needs to be accessible regardless of which workspace is active.
 
@@ -95,9 +96,14 @@ All under `claude-squad workspace`:
 | `workspace add [path]` | Register a git repo as a workspace. Defaults to `.`. Flag `--name` overrides the auto-derived name (directory basename). |
 | `workspace list` | List registered workspaces with name, path, and status (`[last used]` or `[missing]`). |
 | `workspace remove <name>` | Unregister a workspace by name. Does not delete the `.claude-squad/` directory. |
+| `workspace use <name>` | Set the default workspace (`LastUsed`) for future invocations. |
+| `workspace rename <old> <new>` | Rename a workspace in the registry. |
+| `workspace status [name]` | Show instance counts for a workspace (defaults to cwd-matched workspace). |
 | `workspace migrate` | Move global instances to their matching workspaces (see [Migration](#migration)). |
 
-Source: `cmd/workspace.go`.
+The root command also accepts `--workspace <name>` (`-w`) to select a workspace by name, bypassing cwd auto-detection.
+
+Source: `cmd/workspace.go`, `main.go`.
 
 ### `workspace add` Details
 
@@ -116,13 +122,17 @@ Source: `cmd/workspace.go`.
 
 ## Startup Behavior
 
-Source: `main.go` (lines 47-87).
+Source: `main.go`, `config/workspace.go` (`ResolveWorkspace`).
 
 ```
 ┌─────────────────────────────────┐
 │ Load workspace registry         │
 └──────────┬──────────────────────┘
            │
+     ┌─────▼─────────────────┐
+     │ --workspace flag set? │──── yes ──► Look up by name
+     └─────┬─────────────────┘             → WorkspaceContext
+           │ no
      ┌─────▼─────┐
      │ Any       │──── no ──► Require cwd is a git repo
      │ workspaces│            (original behavior)
@@ -131,17 +141,16 @@ Source: `main.go` (lines 47-87).
            │ yes
      ┌─────▼──────────────────┐
      │ Does cwd match a       │──── yes ──► Auto-select that workspace
-     │ registered workspace?  │             Set CLAUDE_SQUAD_HOME
+     │ registered workspace?  │             → WorkspaceContext
      └─────┬──────────────────┘
            │ no
-     ┌─────▼──────────────────┐
-     │ Prompt user to pick    │
-     │ from workspace list    │
-     │ (includes "Global")    │
-     └─────┬──────────────────┘
+     ┌─────▼──────────────────────┐
+     │ Show TUI workspace picker  │
+     │ (includes "Global" option) │
+     │ inside Bubble Tea          │
+     └─────┬──────────────────────┘
            │
      ┌─────▼──────────────────┐
-     │ Set CLAUDE_SQUAD_HOME  │
      │ Update LastUsed        │
      │ Load config & continue │
      └────────────────────────┘
@@ -221,7 +230,7 @@ The actual directories are moved on disk via `os.Rename()`.
 
 ## Design Decisions
 
-**Isolation via env var, not filtering.** Rather than loading all instances globally and filtering by workspace, each workspace has its own state file. The `CLAUDE_SQUAD_HOME` env var redirects all config/state reads to the workspace directory. This is simpler and avoids cross-workspace state leaks.
+**Isolation via explicit context, not filtering.** Rather than loading all instances globally and filtering by workspace, each workspace has its own state file. A `WorkspaceContext` value object carries the config directory and is threaded through all function calls. `CLAUDE_SQUAD_HOME` is retained as a backward-compatible fallback for external tooling.
 
 **Registry always global.** The workspace registry must be accessible before any workspace is selected, so it lives at `~/.claude-squad/workspaces.json` regardless of `CLAUDE_SQUAD_HOME`.
 
