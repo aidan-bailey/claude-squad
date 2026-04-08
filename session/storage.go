@@ -43,13 +43,16 @@ type DiffStatsData struct {
 
 // Storage handles saving and loading instances using the state interface
 type Storage struct {
-	state config.InstanceStorage
+	state     config.InstanceStorage
+	configDir string
 }
 
-// NewStorage creates a new storage instance
-func NewStorage(state config.InstanceStorage) (*Storage, error) {
+// NewStorage creates a new storage instance.
+// configDir is the workspace config directory injected into loaded instances.
+func NewStorage(state config.InstanceStorage, configDir string) (*Storage, error) {
 	return &Storage{
-		state: state,
+		state:     state,
+		configDir: configDir,
 	}, nil
 }
 
@@ -83,7 +86,7 @@ func (s *Storage) LoadInstances() ([]*Instance, error) {
 
 	instances := make([]*Instance, len(instancesData))
 	for i, data := range instancesData {
-		instance, err := FromInstanceData(data)
+		instance, err := FromInstanceData(data, s.configDir)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create instance %s: %w", data.Title, err)
 		}

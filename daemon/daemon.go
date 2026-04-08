@@ -16,10 +16,16 @@ import (
 
 // RunDaemon runs the daemon process which iterates over all sessions and runs AutoYes mode on them.
 // It's expected that the main process kills the daemon when the main process starts.
-func RunDaemon(cfg *config.Config) error {
+// configDir is the workspace config directory; if empty, falls back to GetConfigDir().
+func RunDaemon(cfg *config.Config, configDir string) error {
 	log.InfoLog.Printf("starting daemon")
-	state := config.LoadState()
-	storage, err := session.NewStorage(state)
+	var state *config.State
+	if configDir != "" {
+		state = config.LoadStateFrom(configDir)
+	} else {
+		state = config.LoadState()
+	}
+	storage, err := session.NewStorage(state, configDir)
 	if err != nil {
 		return fmt.Errorf("failed to initialize storage: %w", err)
 	}
@@ -88,14 +94,19 @@ func RunDaemon(cfg *config.Config) error {
 }
 
 // LaunchDaemon launches the daemon process.
-func LaunchDaemon() error {
+// configDir is the workspace config directory; if empty, falls back to GetConfigDir().
+func LaunchDaemon(configDir string) error {
 	// Find the claude squad binary.
 	execPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to get executable path: %w", err)
 	}
 
-	cmd := exec.Command(execPath, "--daemon")
+	args := []string{"--daemon"}
+	if configDir != "" {
+		args = append(args, "--config-dir", configDir)
+	}
+	cmd := exec.Command(execPath, args...)
 
 	// Detach the process from the parent
 	cmd.Stdin = nil
@@ -112,9 +123,12 @@ func LaunchDaemon() error {
 	log.InfoLog.Printf("started daemon child process with PID: %d", cmd.Process.Pid)
 
 	// Save PID to a file for later management
-	pidDir, err := config.GetConfigDir()
-	if err != nil {
-		return fmt.Errorf("failed to get config directory: %w", err)
+	pidDir := configDir
+	if pidDir == "" {
+		pidDir, err = config.GetConfigDir()
+		if err != nil {
+			return fmt.Errorf("failed to get config directory: %w", err)
+		}
 	}
 
 	pidFile := filepath.Join(pidDir, "daemon.pid")
@@ -128,10 +142,15 @@ func LaunchDaemon() error {
 
 // StopDaemon attempts to stop a running daemon process if it exists. Returns no error if the daemon is not found
 // (assumes the daemon does not exist).
-func StopDaemon() error {
-	pidDir, err := config.GetConfigDir()
-	if err != nil {
-		return fmt.Errorf("failed to get config directory: %w", err)
+// configDir is the workspace config directory; if empty, falls back to GetConfigDir().
+func StopDaemon(configDir string) error {
+	pidDir := configDir
+	if pidDir == "" {
+		var err error
+		pidDir, err = config.GetConfigDir()
+		if err != nil {
+			return fmt.Errorf("failed to get config directory: %w", err)
+		}
 	}
 
 	pidFile := filepath.Join(pidDir, "daemon.pid")

@@ -8,10 +8,13 @@ import (
 	"time"
 )
 
-func getWorktreeDirectory() (string, error) {
-	configDir, err := config.GetConfigDir()
-	if err != nil {
-		return "", err
+func getWorktreeDirectory(configDir string) (string, error) {
+	if configDir == "" {
+		var err error
+		configDir, err = config.GetConfigDir()
+		if err != nil {
+			return "", err
+		}
 	}
 
 	return filepath.Join(configDir, "worktrees"), nil
@@ -32,9 +35,11 @@ type GitWorktree struct {
 	// isExistingBranch is true if the branch existed before the session was created.
 	// When true, the branch will not be deleted on cleanup.
 	isExistingBranch bool
+	// configDir is the resolved config directory for workspace-scoped worktrees.
+	configDir string
 }
 
-func NewGitWorktreeFromStorage(repoPath string, worktreePath string, sessionName string, branchName string, baseCommitSHA string, isExistingBranch bool) *GitWorktree {
+func NewGitWorktreeFromStorage(repoPath string, worktreePath string, sessionName string, branchName string, baseCommitSHA string, isExistingBranch bool, configDir string) *GitWorktree {
 	return &GitWorktree{
 		repoPath:         repoPath,
 		worktreePath:     worktreePath,
@@ -42,11 +47,12 @@ func NewGitWorktreeFromStorage(repoPath string, worktreePath string, sessionName
 		branchName:       branchName,
 		baseCommitSHA:    baseCommitSHA,
 		isExistingBranch: isExistingBranch,
+		configDir:        configDir,
 	}
 }
 
 // resolveWorktreePaths resolves the repo root and generates a unique worktree path for the given branch name.
-func resolveWorktreePaths(repoPath string, branchName string) (resolvedRepo string, worktreePath string, err error) {
+func resolveWorktreePaths(repoPath string, branchName string, configDir string) (resolvedRepo string, worktreePath string, err error) {
 	absPath, err := filepath.Abs(repoPath)
 	if err != nil {
 		log.ErrorLog.Printf("git worktree path abs error, falling back to repoPath %s: %s", repoPath, err)
@@ -58,7 +64,7 @@ func resolveWorktreePaths(repoPath string, branchName string) (resolvedRepo stri
 		return "", "", err
 	}
 
-	worktreeDir, err := getWorktreeDirectory()
+	worktreeDir, err := getWorktreeDirectory(configDir)
 	if err != nil {
 		return "", "", err
 	}
@@ -69,15 +75,21 @@ func resolveWorktreePaths(repoPath string, branchName string) (resolvedRepo stri
 	return resolvedRepo, worktreePath, nil
 }
 
-// NewGitWorktree creates a new GitWorktree instance
-func NewGitWorktree(repoPath string, sessionName string) (tree *GitWorktree, branchname string, err error) {
-	cfg := config.LoadConfig()
+// NewGitWorktree creates a new GitWorktree instance.
+// configDir is the workspace config directory; if empty, falls back to GetConfigDir().
+func NewGitWorktree(repoPath string, sessionName string, configDir string) (tree *GitWorktree, branchname string, err error) {
+	var cfg *config.Config
+	if configDir != "" {
+		cfg = config.LoadConfigFrom(configDir)
+	} else {
+		cfg = config.LoadConfig()
+	}
 	branchName := fmt.Sprintf("%s%s", cfg.BranchPrefix, sessionName)
 	// Sanitize the final branch name to handle invalid characters from any source
 	// (e.g., backslashes from Windows domain usernames like DOMAIN\user)
 	branchName = sanitizeBranchName(branchName)
 
-	repoPath, worktreePath, err := resolveWorktreePaths(repoPath, branchName)
+	repoPath, worktreePath, err := resolveWorktreePaths(repoPath, branchName, configDir)
 	if err != nil {
 		return nil, "", err
 	}
@@ -87,13 +99,15 @@ func NewGitWorktree(repoPath string, sessionName string) (tree *GitWorktree, bra
 		sessionName:  sessionName,
 		branchName:   branchName,
 		worktreePath: worktreePath,
+		configDir:    configDir,
 	}, branchName, nil
 }
 
 // NewGitWorktreeFromBranch creates a new GitWorktree that uses an existing branch.
 // The branch will not be deleted on cleanup.
-func NewGitWorktreeFromBranch(repoPath string, branchName string, sessionName string) (*GitWorktree, error) {
-	repoPath, worktreePath, err := resolveWorktreePaths(repoPath, branchName)
+// configDir is the workspace config directory; if empty, falls back to GetConfigDir().
+func NewGitWorktreeFromBranch(repoPath string, branchName string, sessionName string, configDir string) (*GitWorktree, error) {
+	repoPath, worktreePath, err := resolveWorktreePaths(repoPath, branchName, configDir)
 	if err != nil {
 		return nil, err
 	}
@@ -104,6 +118,7 @@ func NewGitWorktreeFromBranch(repoPath string, branchName string, sessionName st
 		branchName:       branchName,
 		worktreePath:     worktreePath,
 		isExistingBranch: true,
+		configDir:        configDir,
 	}, nil
 }
 

@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -22,9 +23,11 @@ import (
 const GlobalInstanceLimit = 10
 
 // Run is the main entrypoint into the application.
-func Run(ctx context.Context, program string, autoYes bool) error {
+// wsCtx is the resolved workspace context; nil means global.
+// registry is passed through for the startup workspace picker.
+func Run(ctx context.Context, wsCtx *config.WorkspaceContext, registry *config.WorkspaceRegistry, program string, autoYes bool) error {
 	p := tea.NewProgram(
-		newHome(ctx, program, autoYes),
+		newHome(ctx, wsCtx, registry, program, autoYes),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(), // Mouse scroll
 	)
@@ -51,8 +54,7 @@ const (
 // workspaceSlot bundles per-workspace state so multiple workspaces can be
 // loaded in memory simultaneously.
 type workspaceSlot struct {
-	workspace    config.Workspace
-	configDir    string
+	wsCtx        *config.WorkspaceContext
 	storage      *session.Storage
 	appConfig    *config.Config
 	appState     config.AppState
@@ -116,6 +118,8 @@ type home struct {
 
 	// -- Workspace slots --
 
+	// activeCtx is the WorkspaceContext for the currently focused workspace.
+	activeCtx *config.WorkspaceContext
 	// slots holds per-workspace state for all active workspaces
 	slots []workspaceSlot
 	// focusedSlot is the index into slots for the currently displayed workspace
@@ -127,15 +131,26 @@ type home struct {
 	lastHeight int
 }
 
-func newHome(ctx context.Context, program string, autoYes bool) *home {
-	// Load application config
-	appConfig := config.LoadConfig()
+func newHome(ctx context.Context, wsCtx *config.WorkspaceContext, registry *config.WorkspaceRegistry, program string, autoYes bool) *home {
+	// Determine config directory from workspace context.
+	cfgDir := ""
+	if wsCtx != nil {
+		cfgDir = wsCtx.ConfigDir
+	}
 
-	// Load application state
-	appState := config.LoadState()
+	// Load application config and state from the resolved workspace directory.
+	var appConfig *config.Config
+	var appState *config.State
+	if cfgDir != "" {
+		appConfig = config.LoadConfigFrom(cfgDir)
+		appState = config.LoadStateFrom(cfgDir)
+	} else {
+		appConfig = config.LoadConfig()
+		appState = config.LoadState()
+	}
 
 	// Initialize storage
-	storage, err := session.NewStorage(appState)
+	storage, err := session.NewStorage(appState, cfgDir)
 	if err != nil {
 		fmt.Printf("Failed to initialize storage: %v\n", err)
 		os.Exit(1)
@@ -143,6 +158,7 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 
 	h := &home{
 		ctx:          ctx,
+		activeCtx:    wsCtx,
 		spinner:      spinner.New(spinner.WithSpinner(spinner.MiniDot)),
 		menu:         ui.NewMenu(),
 		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
@@ -155,7 +171,13 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		appState:     appState,
 		tabBar:       ui.NewWorkspaceTabBar(),
 	}
+	if wsCtx != nil {
+		h.workspaceName = wsCtx.Name
+	}
 	h.list = ui.NewList(&h.spinner, autoYes)
+	if h.workspaceName != "" {
+		h.list.SetWorkspaceName(h.workspaceName)
+	}
 
 	// Load saved instances
 	instances, err := storage.LoadInstances()
@@ -173,16 +195,10 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		}
 	}
 
-	// Auto-activate workspace matching cwd.
-	cwd, _ := os.Getwd()
-	if reg, err := config.LoadWorkspaceRegistry(); err == nil {
-		if ws := reg.FindByPath(cwd); ws != nil {
-			if err := h.activateWorkspace(*ws); err != nil {
-				log.ErrorLog.Printf("failed to activate workspace %s: %v", ws.Name, err)
-			} else {
-				h.loadSlot(0)
-			}
-		}
+	// If we're in global context but workspaces exist, show the startup picker.
+	if wsCtx != nil && wsCtx.Name == "" && registry != nil && len(registry.Workspaces) > 0 {
+		h.workspacePicker = overlay.NewStartupWorkspacePicker(registry.Workspaces)
+		h.state = stateWorkspace
 	}
 
 	return h
@@ -375,7 +391,7 @@ func (m *home) handleQuit() (tea.Model, tea.Cmd) {
 		m.saveCurrentSlot()
 		for _, slot := range m.slots {
 			if err := slot.storage.SaveInstances(slot.list.GetInstances()); err != nil {
-				log.ErrorLog.Printf("failed to save workspace %s: %v", slot.workspace.Name, err)
+				log.ErrorLog.Printf("failed to save workspace %s: %v", slot.wsCtx.Name, err)
 			}
 		}
 	} else {
@@ -604,6 +620,26 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	if m.state == stateWorkspace {
 		committed, _ := m.workspacePicker.HandleKeyPress(msg)
 		if committed {
+			if m.workspacePicker.IsStartup() {
+				// Startup single-select: activate the chosen workspace.
+				selected := m.workspacePicker.GetSelectedWorkspace()
+				m.workspacePicker = nil
+				m.state = stateDefault
+				if selected != nil {
+					wsCtx := config.WorkspaceContextFor(selected)
+					m.activeCtx = wsCtx
+					if err := m.activateWorkspace(*selected); err != nil {
+						return m, m.handleError(fmt.Errorf("failed to activate workspace: %w", err))
+					}
+					m.loadSlot(0)
+					if reg, err := config.LoadWorkspaceRegistry(); err == nil {
+						_ = reg.UpdateLastUsed(selected.Name)
+					}
+				}
+				// else: Global selected, keep current (global) state.
+				return m, tea.WindowSize()
+			}
+			// Mid-session toggle: diff active workspaces.
 			desired := m.workspacePicker.GetActiveWorkspaces()
 			m.workspacePicker = nil
 			m.state = stateDefault
@@ -673,9 +709,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 
 		instance, err := session.NewInstance(session.InstanceOptions{
-			Title:   "",
-			Path:    repoDir,
-			Program: m.program,
+			Title:     "",
+			Path:      repoDir,
+			Program:   m.program,
+			ConfigDir: m.configDir(),
 		})
 		if err != nil {
 			return m, m.handleError(err)
@@ -694,9 +731,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
 		}
 		instance, err := session.NewInstance(session.InstanceOptions{
-			Title:   "",
-			Path:    m.repoPath(),
-			Program: m.program,
+			Title:     "",
+			Path:      m.repoPath(),
+			Program:   m.program,
+			ConfigDir: m.configDir(),
 		})
 		if err != nil {
 			return m, m.handleError(err)
@@ -849,7 +887,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 		activeNames := make(map[string]bool, len(m.slots))
 		for _, slot := range m.slots {
-			activeNames[slot.workspace.Name] = true
+			activeNames[slot.wsCtx.Name] = true
 		}
 		m.workspacePicker = overlay.NewWorkspacePicker(registry.Workspaces, activeNames)
 		m.state = stateWorkspace
@@ -1029,7 +1067,7 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 // otherwise it falls back to the process working directory.
 func (m *home) repoPath() string {
 	if len(m.slots) > 0 && m.focusedSlot >= 0 && m.focusedSlot < len(m.slots) {
-		if p := m.slots[m.focusedSlot].workspace.Path; p != "" {
+		if p := m.slots[m.focusedSlot].wsCtx.RepoPath; p != "" {
 			return p
 		}
 	}
@@ -1037,13 +1075,22 @@ func (m *home) repoPath() string {
 	return cwd
 }
 
+// configDir returns the config directory for the active workspace context.
+// Returns empty string when no workspace is active (triggers fallback to GetConfigDir).
+func (m *home) configDir() string {
+	if m.activeCtx != nil {
+		return m.activeCtx.ConfigDir
+	}
+	return ""
+}
+
 // activateWorkspace loads a workspace's state, config, instances and UI
 // components, appending a new slot to m.slots.
 func (m *home) activateWorkspace(ws config.Workspace) error {
-	configDir := config.WorkspaceConfigDir(&ws)
-	state := config.LoadStateFrom(configDir)
-	appConfig := config.LoadConfigFrom(configDir)
-	storage, err := session.NewStorage(state)
+	wsCtx := config.WorkspaceContextFor(&ws)
+	state := config.LoadStateFrom(wsCtx.ConfigDir)
+	appConfig := config.LoadConfigFrom(wsCtx.ConfigDir)
+	storage, err := session.NewStorage(state, wsCtx.ConfigDir)
 	if err != nil {
 		return fmt.Errorf("failed to create storage for workspace %s: %w", ws.Name, err)
 	}
@@ -1073,8 +1120,7 @@ func (m *home) activateWorkspace(ws config.Workspace) error {
 	}
 
 	m.slots = append(m.slots, workspaceSlot{
-		workspace:    ws,
-		configDir:    configDir,
+		wsCtx:        wsCtx,
 		storage:      storage,
 		appConfig:    appConfig,
 		appState:     state,
@@ -1088,7 +1134,7 @@ func (m *home) activateWorkspace(ws config.Workspace) error {
 func (m *home) deactivateWorkspace(name string) {
 	idx := -1
 	for i, slot := range m.slots {
-		if slot.workspace.Name == name {
+		if slot.wsCtx.Name == name {
 			idx = i
 			break
 		}
@@ -1122,26 +1168,31 @@ func (m *home) saveCurrentSlot() {
 	s.appState = m.appState
 }
 
-// loadSlot copies a slot's fields onto home and updates CLAUDE_SQUAD_HOME.
+// loadSlot copies a slot's fields onto home and updates the active workspace context.
 func (m *home) loadSlot(idx int) {
 	if idx < 0 || idx >= len(m.slots) {
 		return
 	}
 	slot := m.slots[idx]
 	m.focusedSlot = idx
+	m.activeCtx = slot.wsCtx
 	m.list = slot.list
 	m.tabbedWindow = slot.tabbedWindow
 	m.storage = slot.storage
 	m.appConfig = slot.appConfig
 	m.appState = slot.appState
-	m.workspaceName = slot.workspace.Name
-	os.Setenv("CLAUDE_SQUAD_HOME", slot.configDir)
-	m.list.SetWorkspaceName(slot.workspace.Name)
+	m.workspaceName = slot.wsCtx.Name
+	// Keep env var in sync for any code still using GetConfigDir() directly.
+	// Phase 2 will remove this once all paths use explicit context.
+	os.Setenv("CLAUDE_SQUAD_HOME", slot.wsCtx.ConfigDir)
+	m.list.SetWorkspaceName(slot.wsCtx.Name)
 	m.tabBar.SetWorkspaces(m.slotNames(), m.focusedSlot)
 }
 
 // applyWorkspaceToggle diffs the current slots against the desired list,
 // activating and deactivating workspaces as needed.
+// Activates new workspaces first so that if activation fails, the old
+// workspace is still available.
 func (m *home) applyWorkspaceToggle(desired []config.Workspace) tea.Cmd {
 	m.saveCurrentSlot()
 
@@ -1150,27 +1201,29 @@ func (m *home) applyWorkspaceToggle(desired []config.Workspace) tea.Cmd {
 		desiredNames[ws.Name] = true
 	}
 
-	// Deactivate slots not in desired (reverse order to keep indices stable).
-	for i := len(m.slots) - 1; i >= 0; i-- {
-		if !desiredNames[m.slots[i].workspace.Name] {
-			m.deactivateWorkspace(m.slots[i].workspace.Name)
-		}
-	}
-
-	// Activate workspaces not already in slots.
+	// 1. Activate new workspaces first (safe — adds to slots without removing).
 	currentNames := make(map[string]bool, len(m.slots))
 	for _, slot := range m.slots {
-		currentNames[slot.workspace.Name] = true
+		currentNames[slot.wsCtx.Name] = true
 	}
+	var activationErrors []string
 	for _, ws := range desired {
 		if !currentNames[ws.Name] {
 			if err := m.activateWorkspace(ws); err != nil {
-				log.ErrorLog.Printf("failed to activate workspace %s: %v", ws.Name, err)
+				activationErrors = append(activationErrors,
+					fmt.Sprintf("%s: %v", ws.Name, err))
 			}
 		}
 	}
 
-	// Load focused slot (or first available).
+	// 2. Deactivate slots not in desired (reverse order to keep indices stable).
+	for i := len(m.slots) - 1; i >= 0; i-- {
+		if !desiredNames[m.slots[i].wsCtx.Name] {
+			m.deactivateWorkspace(m.slots[i].wsCtx.Name)
+		}
+	}
+
+	// 3. Load focused slot (or first available).
 	if len(m.slots) > 0 {
 		if m.focusedSlot >= len(m.slots) {
 			m.focusedSlot = 0
@@ -1179,6 +1232,13 @@ func (m *home) applyWorkspaceToggle(desired []config.Workspace) tea.Cmd {
 	}
 
 	m.tabBar.SetWorkspaces(m.slotNames(), m.focusedSlot)
+
+	// 4. Surface activation errors to the user.
+	if len(activationErrors) > 0 {
+		return tea.Batch(tea.WindowSize(),
+			m.handleError(fmt.Errorf("failed to activate: %s",
+				strings.Join(activationErrors, "; "))))
+	}
 	return tea.WindowSize()
 }
 
@@ -1210,7 +1270,7 @@ func (m *home) updateTabBarPrompting() {
 func (m *home) slotNames() []string {
 	names := make([]string, len(m.slots))
 	for i, slot := range m.slots {
-		names[i] = slot.workspace.Name
+		names[i] = slot.wsCtx.Name
 	}
 	return names
 }

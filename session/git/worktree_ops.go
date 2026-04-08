@@ -12,7 +12,7 @@ import (
 // Setup creates a new worktree for the session
 func (g *GitWorktree) Setup() error {
 	// Ensure worktrees directory exists early (can be done in parallel with branch check)
-	worktreesDir, err := getWorktreeDirectory()
+	worktreesDir, err := getWorktreeDirectory(g.configDir)
 	if err != nil {
 		return fmt.Errorf("failed to get worktree directory: %w", err)
 	}
@@ -161,9 +161,10 @@ func (g *GitWorktree) Prune() error {
 	return nil
 }
 
-// CleanupWorktrees removes all worktrees and their associated branches
-func CleanupWorktrees() error {
-	worktreesDir, err := getWorktreeDirectory()
+// CleanupWorktrees removes all worktrees and their associated branches.
+// configDir is the workspace config directory; if empty, falls back to GetConfigDir().
+func CleanupWorktrees(configDir string) error {
+	worktreesDir, err := getWorktreeDirectory(configDir)
 	if err != nil {
 		return fmt.Errorf("failed to get worktree directory: %w", err)
 	}

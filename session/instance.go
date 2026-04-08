@@ -51,6 +51,8 @@ type Instance struct {
 	AutoYes bool
 	// Prompt is the initial prompt to pass to the instance on startup
 	Prompt string
+	// ConfigDir is the workspace config directory for worktree resolution.
+	ConfigDir string
 
 	// DiffStats stores the current git diff statistics
 	diffStats *git.DiffStats
@@ -106,8 +108,9 @@ func (i *Instance) ToInstanceData() InstanceData {
 	return data
 }
 
-// FromInstanceData creates a new Instance from serialized data
-func FromInstanceData(data InstanceData) (*Instance, error) {
+// FromInstanceData creates a new Instance from serialized data.
+// configDir is injected into the instance for workspace-scoped worktree resolution.
+func FromInstanceData(data InstanceData, configDir string) (*Instance, error) {
 	instance := &Instance{
 		Title:     data.Title,
 		Path:      data.Path,
@@ -119,6 +122,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		UpdatedAt: data.UpdatedAt,
 		Program:   data.Program,
 		AutoYes:   data.AutoYes,
+		ConfigDir: configDir,
 		gitWorktree: git.NewGitWorktreeFromStorage(
 			data.Worktree.RepoPath,
 			data.Worktree.WorktreePath,
@@ -126,6 +130,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 			data.Worktree.BranchName,
 			data.Worktree.BaseCommitSHA,
 			data.Worktree.IsExistingBranch,
+			configDir,
 		),
 	}
 
@@ -163,6 +168,8 @@ type InstanceOptions struct {
 	AutoYes bool
 	// Branch is an existing branch name to start the session on (empty = new branch from HEAD)
 	Branch string
+	// ConfigDir is the workspace config directory for worktree resolution.
+	ConfigDir string
 }
 
 func NewInstance(opts InstanceOptions) (*Instance, error) {
@@ -185,6 +192,7 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		UpdatedAt:      t,
 		AutoYes:        false,
 		selectedBranch: opts.Branch,
+		ConfigDir:      opts.ConfigDir,
 	}, nil
 }
 
@@ -222,14 +230,14 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 
 	if firstTimeSetup {
 		if i.selectedBranch != "" {
-			gitWorktree, err := git.NewGitWorktreeFromBranch(i.Path, i.selectedBranch, i.Title)
+			gitWorktree, err := git.NewGitWorktreeFromBranch(i.Path, i.selectedBranch, i.Title, i.ConfigDir)
 			if err != nil {
 				return fmt.Errorf("failed to create git worktree from branch: %w", err)
 			}
 			i.gitWorktree = gitWorktree
 			i.Branch = i.selectedBranch
 		} else {
-			gitWorktree, branchName, err := git.NewGitWorktree(i.Path, i.Title)
+			gitWorktree, branchName, err := git.NewGitWorktree(i.Path, i.Title, i.ConfigDir)
 			if err != nil {
 				return fmt.Errorf("failed to create git worktree: %w", err)
 			}
