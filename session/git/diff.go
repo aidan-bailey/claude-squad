@@ -1,6 +1,7 @@
 package git
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -24,6 +25,11 @@ func (d *DiffStats) IsEmpty() bool {
 // Diff returns the git diff between the worktree and the base branch along with statistics
 func (g *GitWorktree) Diff() *DiffStats {
 	stats := &DiffStats{}
+
+	if g.GetBaseCommitSHA() == "" {
+		stats.Error = fmt.Errorf("base commit SHA not set")
+		return stats
+	}
 
 	// -N stages untracked files (intent to add), including them in the diff
 	_, err := g.runGitCommand(g.worktreePath, "add", "-N", ".")

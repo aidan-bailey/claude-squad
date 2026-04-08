@@ -59,6 +59,9 @@ func (pp *ProfilePicker) HandleKeyPress(msg tea.KeyMsg) bool {
 
 // GetSelectedProfile returns the currently selected profile.
 func (pp *ProfilePicker) GetSelectedProfile() config.Profile {
+	if len(pp.profiles) == 0 {
+		return config.Profile{}
+	}
 	if pp.cursor < 0 || pp.cursor >= len(pp.profiles) {
 		return pp.profiles[0]
 	}

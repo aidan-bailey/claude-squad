@@ -127,11 +127,16 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 			data.Worktree.BaseCommitSHA,
 			data.Worktree.IsExistingBranch,
 		),
-		diffStats: &git.DiffStats{
+	}
+
+	// Only restore DiffStats if any field is non-zero, preserving nil for
+	// instances that were serialized without diff stats.
+	if data.DiffStats.Added != 0 || data.DiffStats.Removed != 0 || data.DiffStats.Content != "" {
+		instance.diffStats = &git.DiffStats{
 			Added:   data.DiffStats.Added,
 			Removed: data.DiffStats.Removed,
 			Content: data.DiffStats.Content,
-		},
+		}
 	}
 
 	if instance.Paused() {
@@ -454,11 +459,10 @@ func (i *Instance) Pause() error {
 			return i.combineErrors(errs)
 		}
 
-		// Only prune if remove was successful
+		// Prune stale worktree references. This is non-critical — the worktree
+		// is already removed, so don't abort the pause if prune fails.
 		if err := i.gitWorktree.Prune(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to prune git worktrees: %w", err))
-			log.ErrorLog.Print(err)
-			return i.combineErrors(errs)
+			log.ErrorLog.Printf("failed to prune git worktrees (non-critical): %v", err)
 		}
 	}
 
@@ -500,7 +504,12 @@ func (i *Instance) Resume() error {
 		// Session exists, just restore PTY connection to it
 		if err := i.tmuxSession.Restore(); err != nil {
 			log.ErrorLog.Print(err)
-			// If restore fails, fall back to creating new session
+			// Kill the broken session before creating a new one,
+			// because Start() rejects sessions that already exist.
+			if closeErr := i.tmuxSession.Close(); closeErr != nil {
+				log.ErrorLog.Print(closeErr)
+			}
+			// Fall back to creating new session
 			if err := i.tmuxSession.Start(i.gitWorktree.GetWorktreePath()); err != nil {
 				log.ErrorLog.Print(err)
 				// Cleanup git worktree if tmux session creation fails

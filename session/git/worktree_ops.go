@@ -61,12 +61,16 @@ func (g *GitWorktree) setupFromExistingBranch() error {
 		}
 	}
 
-	// Record the base commit SHA for diff calculations
-	output, err := g.runGitCommand(g.worktreePath, "rev-parse", "HEAD")
-	if err != nil {
-		return fmt.Errorf("failed to get base commit for existing branch %s: %w", g.branchName, err)
+	// Record the base commit SHA for diff calculations, but only if not already
+	// set (e.g. preserved from storage during a resume). Overwriting it would
+	// reset the diff baseline to the pause commit, hiding all pre-pause changes.
+	if g.baseCommitSHA == "" {
+		output, err := g.runGitCommand(g.worktreePath, "rev-parse", "HEAD")
+		if err != nil {
+			return fmt.Errorf("failed to get base commit for existing branch %s: %w", g.branchName, err)
+		}
+		g.baseCommitSHA = strings.TrimSpace(string(output))
 	}
-	g.baseCommitSHA = strings.TrimSpace(string(output))
 
 	return nil
 }

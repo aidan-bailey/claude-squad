@@ -1048,7 +1048,10 @@ func (m *home) activateWorkspace(ws config.Workspace) error {
 		return fmt.Errorf("failed to create storage for workspace %s: %w", ws.Name, err)
 	}
 
-	instances, _ := storage.LoadInstances()
+	instances, err := storage.LoadInstances()
+	if err != nil {
+		log.ErrorLog.Printf("failed to load instances for workspace %s: %v", ws.Name, err)
+	}
 	list := ui.NewList(&m.spinner, m.autoYes)
 	for _, inst := range instances {
 		list.AddInstance(inst)()
