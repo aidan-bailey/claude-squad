@@ -334,6 +334,9 @@ func (i *Instance) Preview() (string, error) {
 	if !i.started || i.Status == Paused {
 		return "", nil
 	}
+	if !i.TmuxAlive() {
+		return "", nil
+	}
 	return i.tmuxSession.CapturePaneContent()
 }
 

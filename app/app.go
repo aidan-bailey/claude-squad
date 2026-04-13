@@ -268,6 +268,13 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !instance.Started() || instance.Paused() {
 				continue
 			}
+			// If the tmux session died (e.g. worktree deleted externally),
+			// mark the instance as paused rather than spamming capture errors.
+			if !instance.TmuxAlive() {
+				log.WarningLog.Printf("tmux session for %q is gone, marking as paused", instance.Title)
+				instance.SetStatus(session.Paused)
+				continue
+			}
 			instance.CheckAndHandleTrustPrompt()
 			updated, prompt := instance.HasUpdated()
 			if updated {
