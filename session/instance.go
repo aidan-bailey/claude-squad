@@ -192,17 +192,17 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 	}
 
 	return &Instance{
-		Title:          opts.Title,
-		Status:         Ready,
-		Path:           absPath,
-		Program:        opts.Program,
-		Height:         0,
-		Width:          0,
-		CreatedAt:      t,
-		UpdatedAt:      t,
-		AutoYes:        false,
-		selectedBranch: opts.Branch,
-		ConfigDir:      opts.ConfigDir,
+		Title:               opts.Title,
+		Status:              Ready,
+		Path:                absPath,
+		Program:             opts.Program,
+		Height:              0,
+		Width:               0,
+		CreatedAt:           t,
+		UpdatedAt:           t,
+		AutoYes:             false,
+		selectedBranch:      opts.Branch,
+		ConfigDir:           opts.ConfigDir,
 		IsWorkspaceTerminal: opts.IsWorkspaceTerminal,
 	}, nil
 }
