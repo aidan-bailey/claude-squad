@@ -200,9 +200,9 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		Width:          0,
 		CreatedAt:      t,
 		UpdatedAt:      t,
-		AutoYes:             false,
-		selectedBranch:      opts.Branch,
-		ConfigDir:           opts.ConfigDir,
+		AutoYes:        false,
+		selectedBranch: opts.Branch,
+		ConfigDir:      opts.ConfigDir,
 		IsWorkspaceTerminal: opts.IsWorkspaceTerminal,
 	}, nil
 }

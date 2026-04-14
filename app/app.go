@@ -194,8 +194,12 @@ func newHome(ctx context.Context, wsCtx *config.WorkspaceContext, registry *conf
 
 	// Auto-create workspace terminal if in a workspace context and none exists
 	if !hasWorkspaceTerminal && wsCtx != nil && wsCtx.RepoPath != "" {
+		wtTitle := "Workspace Terminal"
+		if wsCtx.Name != "" {
+			wtTitle = wsCtx.Name
+		}
 		wtInstance, wtErr := session.NewInstance(session.InstanceOptions{
-			Title:               "Workspace Terminal",
+			Title:               wtTitle,
 			Path:                wsCtx.RepoPath,
 			Program:             program,
 			IsWorkspaceTerminal: true,
@@ -329,7 +333,15 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// If the tmux session died (e.g. worktree deleted externally),
 			// mark the instance as paused rather than spamming capture errors.
+			// Workspace terminals auto-restart instead of pausing.
 			if !instance.TmuxAlive() {
+				if instance.IsWorkspaceTerminal {
+					log.WarningLog.Printf("workspace terminal %q tmux died, restarting", instance.Title)
+					if err := instance.Start(true); err != nil {
+						log.ErrorLog.Printf("failed to restart workspace terminal: %v", err)
+					}
+					continue
+				}
 				log.WarningLog.Printf("tmux session for %q is gone, marking as paused", instance.Title)
 				instance.SetStatus(session.Paused)
 				continue
@@ -1230,12 +1242,40 @@ func (m *home) activateWorkspace(ws config.Workspace) error {
 		log.ErrorLog.Printf("failed to load instances for workspace %s: %v", ws.Name, err)
 	}
 	list := ui.NewList(&m.spinner, m.autoYes)
+	hasWorkspaceTerminal := false
 	for _, inst := range instances {
+		if inst.IsWorkspaceTerminal {
+			hasWorkspaceTerminal = true
+		}
 		list.AddInstance(inst)()
 		if m.autoYes {
 			inst.AutoYes = true
 		}
 	}
+
+	// Auto-create workspace terminal if none exists
+	if !hasWorkspaceTerminal && wsCtx.RepoPath != "" {
+		wtTitle := ws.Name
+		if wtTitle == "" {
+			wtTitle = "Workspace Terminal"
+		}
+		wtInstance, wtErr := session.NewInstance(session.InstanceOptions{
+			Title:               wtTitle,
+			Path:                wsCtx.RepoPath,
+			Program:             appConfig.GetProgram(),
+			IsWorkspaceTerminal: true,
+			ConfigDir:           wsCtx.ConfigDir,
+		})
+		if wtErr != nil {
+			log.ErrorLog.Printf("failed to create workspace terminal for %s: %v", ws.Name, wtErr)
+		} else {
+			list.AddInstance(wtInstance)()
+			if startErr := wtInstance.Start(true); startErr != nil {
+				log.ErrorLog.Printf("failed to start workspace terminal for %s: %v", ws.Name, startErr)
+			}
+		}
+	}
+
 	list.SetWorkspaceName(ws.Name)
 
 	tabbedWindow := ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane())

@@ -141,8 +141,6 @@ func (m *Menu) addInstanceOptions() {
 	actionGroup := []keys.KeyName{keys.KeyEnter, keys.KeyQuickInteract}
 	if !m.instance.IsWorkspaceTerminal {
 		actionGroup = append(actionGroup, keys.KeySubmit)
-	}
-	if !m.instance.IsWorkspaceTerminal {
 		if m.instance.Status == session.Paused {
 			actionGroup = append(actionGroup, keys.KeyResume)
 		} else {

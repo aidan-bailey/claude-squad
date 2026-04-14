@@ -35,17 +35,11 @@ func CurrentBranch(repoPath string) (string, error) {
 
 // DiffUncommitted returns the diff of uncommitted changes in the given repo directory.
 // Used for workspace terminals that operate on the root repo without a worktree.
+// Only shows tracked file changes to avoid mutating the user's git index.
 func DiffUncommitted(repoPath string) *DiffStats {
 	stats := &DiffStats{}
 
-	// Stage untracked files (intent to add) so they appear in the diff
-	cmd := exec.Command("git", "-C", repoPath, "add", "-N", ".")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		stats.Error = fmt.Errorf("git add -N failed: %s (%w)", output, err)
-		return stats
-	}
-
-	cmd = exec.Command("git", "-C", repoPath, "--no-pager", "diff", "HEAD")
+	cmd := exec.Command("git", "-C", repoPath, "--no-pager", "diff", "HEAD")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		stats.Error = fmt.Errorf("git diff failed: %s (%w)", output, err)
