@@ -53,6 +53,9 @@ const (
 	stateWorkspace
 	// stateQuickInteract is the state when the quick input bar is displayed.
 	stateQuickInteract
+	// stateInlineAttach is the state when keystrokes are forwarded to the tmux session
+	// while the UI remains visible.
+	stateInlineAttach
 )
 
 // workspaceSlot bundles per-workspace state so multiple workspaces can be
@@ -483,7 +486,7 @@ func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly 
 		m.keySent = false
 		return nil, false
 	}
-	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm || m.state == stateWorkspace || m.state == stateQuickInteract {
+	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm || m.state == stateWorkspace || m.state == stateQuickInteract || m.state == stateInlineAttach {
 		return nil, false
 	}
 	// If it's in the global keymap, we should try to highlight it.
@@ -976,30 +979,9 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if selected == nil || selected.Paused() || selected.Status == session.Loading || !selected.TmuxAlive() {
 			return m, nil
 		}
-		// Terminal tab: attach to terminal session
-		if m.tabbedWindow.IsInTerminalTab() {
-			m.showHelpScreen(helpTypeInstanceAttach{}, func() {
-				ch, err := m.tabbedWindow.AttachTerminal()
-				if err != nil {
-					m.handleError(err)
-					return
-				}
-				<-ch
-				m.state = stateDefault
-			})
-			return m, nil
-		}
-		// Show help screen before attaching
-		m.showHelpScreen(helpTypeInstanceAttach{}, func() {
-			ch, err := m.list.Attach()
-			if err != nil {
-				m.handleError(err)
-				return
-			}
-			<-ch
-			m.state = stateDefault
-		})
-		return m, nil
+		m.state = stateInlineAttach
+		m.menu.SetState(ui.StateInlineAttach)
+		return m, tea.WindowSize()
 	case keys.KeyWorkspace:
 		registry, err := config.LoadWorkspaceRegistry()
 		if err != nil || len(registry.Workspaces) == 0 {
@@ -1040,6 +1022,38 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		m.quickInputBar = ui.NewQuickInputBar()
 		m.menu.SetState(ui.StateQuickInteract)
 		return m, tea.WindowSize()
+	case keys.KeyFullScreenAttach:
+		if m.list.NumInstances() == 0 {
+			return m, nil
+		}
+		selected := m.list.GetSelectedInstance()
+		if selected == nil || selected.Paused() || selected.Status == session.Loading || !selected.TmuxAlive() {
+			return m, nil
+		}
+		// Terminal tab: attach to terminal session
+		if m.tabbedWindow.IsInTerminalTab() {
+			m.showHelpScreen(helpTypeInstanceAttach{}, func() {
+				ch, err := m.tabbedWindow.AttachTerminal()
+				if err != nil {
+					m.handleError(err)
+					return
+				}
+				<-ch
+				m.state = stateDefault
+			})
+			return m, nil
+		}
+		// Preview/diff tab: attach to main instance
+		m.showHelpScreen(helpTypeInstanceAttach{}, func() {
+			ch, err := m.list.Attach()
+			if err != nil {
+				m.handleError(err)
+				return
+			}
+			<-ch
+			m.state = stateDefault
+		})
+		return m, nil
 	default:
 		return m, nil
 	}

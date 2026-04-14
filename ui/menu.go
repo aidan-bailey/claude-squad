@@ -41,6 +41,7 @@ const (
 	StateNewInstance
 	StatePrompt
 	StateQuickInteract
+	StateInlineAttach
 )
 
 type Menu struct {
@@ -58,6 +59,7 @@ var defaultMenuOptions = []keys.KeyName{keys.KeyNew, keys.KeyPrompt, keys.KeyWor
 var newInstanceMenuOptions = []keys.KeyName{keys.KeySubmitName}
 var promptMenuOptions = []keys.KeyName{keys.KeySubmitName}
 var quickInteractMenuOptions = []keys.KeyName{keys.KeySubmitName}
+var inlineAttachMenuOptions = []keys.KeyName{}
 
 func NewMenu() *Menu {
 	return &Menu{
@@ -86,7 +88,7 @@ func (m *Menu) SetState(state MenuState) {
 func (m *Menu) SetInstance(instance *session.Instance) {
 	m.instance = instance
 	// Only change the state if we're not in a special state (NewInstance or Prompt)
-	if m.state != StateNewInstance && m.state != StatePrompt && m.state != StateQuickInteract {
+	if m.state != StateNewInstance && m.state != StatePrompt && m.state != StateQuickInteract && m.state != StateInlineAttach {
 		if m.instance != nil {
 			m.state = StateDefault
 		} else {
@@ -121,6 +123,8 @@ func (m *Menu) updateOptions() {
 		m.options = promptMenuOptions
 	case StateQuickInteract:
 		m.options = quickInteractMenuOptions
+	case StateInlineAttach:
+		m.options = inlineAttachMenuOptions
 	}
 }
 
