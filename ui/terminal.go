@@ -88,11 +88,13 @@ func (t *TerminalPane) UpdateContent(instance *session.Instance) error {
 		return nil
 	}
 
-	// Reset scroll mode when the selected instance changes.
-	if instance.Title != t.currentTitle && t.isScrolling {
-		t.isScrolling = false
-		t.viewport.SetContent("")
-		t.viewport.GotoTop()
+	// Reset scroll mode when the instance changes or viewport is at the bottom.
+	if t.isScrolling {
+		if instance.Title != t.currentTitle || t.viewport.AtBottom() {
+			t.isScrolling = false
+			t.viewport.SetContent("")
+			t.viewport.GotoTop()
+		}
 	}
 
 	// Skip content updates while in scroll mode
@@ -364,12 +366,13 @@ func (t *TerminalPane) ScrollUp() error {
 	return nil
 }
 
-// ScrollDown enters scroll mode (if not already) and scrolls down.
+// ScrollDown scrolls down in the viewport. Does not enter scroll mode from normal mode.
 func (t *TerminalPane) ScrollDown() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if !t.isScrolling {
-		return t.enterScrollMode()
+		// Already showing latest content, nothing to scroll down to.
+		return nil
 	}
 	t.viewport.LineDown(1)
 	return nil

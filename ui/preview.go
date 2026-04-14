@@ -66,6 +66,13 @@ func (p *PreviewPane) UpdateContent(instance *session.Instance) error {
 		}
 	}
 
+	// Auto-exit scroll mode when viewport is at the bottom (back to live output).
+	if p.isScrolling && p.viewport.AtBottom() {
+		p.isScrolling = false
+		p.viewport.SetContent("")
+		p.viewport.GotoTop()
+	}
+
 	switch {
 	case instance == nil:
 		p.setFallbackState("No agents running yet. Spin up a new instance with 'n' to get started!")
@@ -237,28 +244,11 @@ func (p *PreviewPane) ScrollDown(instance *session.Instance) error {
 	}
 
 	if !p.isScrolling {
-		// Entering scroll mode - capture entire pane content including scrollback history
-		content, err := instance.PreviewFullHistory()
-		if err != nil {
-			return err
-		}
-
-		// Set content in the viewport
-		footer := lipgloss.NewStyle().
-			Foreground(lipgloss.AdaptiveColor{Light: "#808080", Dark: "#808080"}).
-			Render("ESC to exit scroll mode")
-
-		contentWithFooter := lipgloss.JoinVertical(lipgloss.Left, content, footer)
-		p.viewport.SetContent(contentWithFooter)
-
-		// Position the viewport at the bottom initially
-		p.viewport.GotoBottom()
-
-		p.isScrolling = true
+		// Already showing latest content, nothing to scroll down to.
 		return nil
 	}
 
-	// Already in copy mode, just scroll the viewport
+	// Already in scroll mode, just scroll the viewport
 	p.viewport.LineDown(1)
 	return nil
 }
