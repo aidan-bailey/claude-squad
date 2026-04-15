@@ -122,6 +122,11 @@ func (s *SplitPane) GetFocusedPane() int {
 	return s.focusedPane
 }
 
+// SetFocusedPane sets focus to the specified pane.
+func (s *SplitPane) SetFocusedPane(pane int) {
+	s.focusedPane = pane
+}
+
 // UpdateAgent updates the agent (preview) pane content. Always updates since it's always visible.
 func (s *SplitPane) UpdateAgent(instance *session.Instance) error {
 	return s.agent.UpdateContent(instance)

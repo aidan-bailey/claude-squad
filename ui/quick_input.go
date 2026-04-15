@@ -15,6 +15,15 @@ const (
 	QuickInputCancel
 )
 
+// QuickInputTarget specifies where submitted text should be routed.
+type QuickInputTarget int
+
+const (
+	QuickInputTargetFocused  QuickInputTarget = iota // send to whichever pane is focused
+	QuickInputTargetAgent                            // always send to agent
+	QuickInputTargetTerminal                         // always send to terminal
+)
+
 var (
 	quickInputHintStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#808080", Dark: "#808080"})
 )
@@ -22,17 +31,19 @@ var (
 // QuickInputBar is a single-line input bar for quick interactions with tmux sessions.
 type QuickInputBar struct {
 	textInput textinput.Model
+	Target    QuickInputTarget
 	width     int
 }
 
 // NewQuickInputBar creates a focused input bar ready for typing.
-func NewQuickInputBar() *QuickInputBar {
+func NewQuickInputBar(target QuickInputTarget) *QuickInputBar {
 	ti := textinput.New()
 	ti.Prompt = "> "
 	ti.Focus()
 	ti.CharLimit = 256
 	return &QuickInputBar{
 		textInput: ti,
+		Target:    target,
 	}
 }
 
@@ -68,6 +79,15 @@ func (q *QuickInputBar) Height() int {
 // View renders the input bar.
 func (q *QuickInputBar) View() string {
 	input := q.textInput.View()
-	hint := quickInputHintStyle.Render("Enter to send · Esc to cancel")
+	var hintText string
+	switch q.Target {
+	case QuickInputTargetAgent:
+		hintText = "Enter to send to agent · Esc to cancel"
+	case QuickInputTargetTerminal:
+		hintText = "Enter to send to terminal · Esc to cancel"
+	default:
+		hintText = "Enter to send · Esc to cancel"
+	}
+	hint := quickInputHintStyle.Render(hintText)
 	return lipgloss.JoinVertical(lipgloss.Left, input, hint)
 }
