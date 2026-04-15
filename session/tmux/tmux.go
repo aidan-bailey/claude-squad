@@ -258,6 +258,9 @@ func (m *statusMonitor) hash(s string) []byte {
 
 // TapEnter sends an enter keystroke to the tmux pane.
 func (t *TmuxSession) TapEnter() error {
+	if t.ptmx == nil {
+		return fmt.Errorf("PTY is not available")
+	}
 	_, err := t.ptmx.Write([]byte{0x0D})
 	if err != nil {
 		return fmt.Errorf("error sending enter keystroke to PTY: %w", err)
@@ -267,6 +270,9 @@ func (t *TmuxSession) TapEnter() error {
 
 // TapDAndEnter sends 'D' followed by an enter keystroke to the tmux pane.
 func (t *TmuxSession) TapDAndEnter() error {
+	if t.ptmx == nil {
+		return fmt.Errorf("PTY is not available")
+	}
 	_, err := t.ptmx.Write([]byte{0x44, 0x0D})
 	if err != nil {
 		return fmt.Errorf("error sending enter keystroke to PTY: %w", err)
@@ -275,12 +281,18 @@ func (t *TmuxSession) TapDAndEnter() error {
 }
 
 func (t *TmuxSession) SendKeys(keys string) error {
+	if t.ptmx == nil {
+		return fmt.Errorf("PTY is not available")
+	}
 	_, err := t.ptmx.Write([]byte(keys))
 	return err
 }
 
 // SendKeysRaw writes raw bytes directly to the tmux PTY.
 func (t *TmuxSession) SendKeysRaw(b []byte) error {
+	if t.ptmx == nil {
+		return fmt.Errorf("PTY is not available")
+	}
 	_, err := t.ptmx.Write(b)
 	return err
 }
@@ -509,8 +521,9 @@ func (t *TmuxSession) DetachSafely() error {
 	return nil
 }
 
-// Detach disconnects from the current tmux session. It panics if detaching fails, unless
-// the session has already died (in which case it cleans up gracefully).
+// Detach disconnects from the current tmux session. If the PTY close or
+// restore fails (e.g., because the tmux session died), it logs the error
+// and degrades gracefully instead of crashing the application.
 func (t *TmuxSession) Detach() {
 	defer func() {
 		t.detachOnce.Do(func() {
@@ -527,14 +540,10 @@ func (t *TmuxSession) Detach() {
 
 	// Close the attached pty session. This causes the pump goroutine to exit.
 	if t.ptmx != nil {
-		err := t.ptmx.Close()
-		if err != nil {
-			// This is a fatal error. We can't detach if we can't close the PTY. It's better to just panic and have the
-			// user re-invoke the program than to ruin their terminal pane.
-			msg := fmt.Sprintf("error closing attach pty session: %v", err)
-			log.ErrorLog.Println(msg)
-			panic(msg)
+		if err := t.ptmx.Close(); err != nil {
+			log.ErrorLog.Printf("error closing attach pty session (session may have died): %v", err)
 		}
+		t.ptmx = nil
 	}
 
 	// Wait for the pump goroutine to exit before restoring.
@@ -544,13 +553,13 @@ func (t *TmuxSession) Detach() {
 
 	// Restore creates a new ptmx and starts a new pump (draining to discard).
 	// Only restore if the session still exists. If the session died (e.g.,
-	// program exited, Ctrl-D), skip restore.
+	// program exited, Ctrl-D), skip restore — the next metadata tick will
+	// detect the death and mark the instance as paused.
 	if t.DoesSessionExist() {
 		if err := t.Restore(); err != nil {
-			// This is a fatal error. Our invariant that a started TmuxSession always has a valid ptmx is violated.
-			msg := fmt.Sprintf("error restoring session after detach: %v", err)
-			log.ErrorLog.Println(msg)
-			panic(msg)
+			log.ErrorLog.Printf("error restoring session after detach (session may have died): %v", err)
+			// ptmx remains nil; the metadata tick will detect the dead
+			// session and mark it as paused.
 		}
 	}
 
@@ -606,6 +615,9 @@ func (t *TmuxSession) SetDetachedSize(width, height int) error {
 
 // updateWindowSize updates the window size of the PTY.
 func (t *TmuxSession) updateWindowSize(cols, rows int) error {
+	if t.ptmx == nil {
+		return fmt.Errorf("PTY is not available")
+	}
 	return pty.Setsize(t.ptmx, &pty.Winsize{
 		Rows: uint16(rows),
 		Cols: uint16(cols),
