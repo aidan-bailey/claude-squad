@@ -29,10 +29,6 @@ func RunDaemon(cfg *config.Config, configDir string) error {
 	if err != nil {
 		return fmt.Errorf("failed to load instacnes: %w", err)
 	}
-	for _, instance := range instances {
-		// Assume AutoYes is true if the daemon is running.
-		instance.AutoYes = true
-	}
 
 	pollInterval := time.Duration(cfg.DaemonPollInterval) * time.Millisecond
 
@@ -47,6 +43,11 @@ func RunDaemon(cfg *config.Config, configDir string) error {
 		ticker := time.NewTimer(pollInterval)
 		for {
 			for _, instance := range instances {
+				// Respect per-instance AutoYes (DAEMON-13). The user may
+				// have opted individual instances out via the main app.
+				if !instance.AutoYes {
+					continue
+				}
 				// We only store started instances, but check anyway.
 				if instance.Started() && !instance.Paused() {
 					if _, hasPrompt := instance.HasUpdated(); hasPrompt {
