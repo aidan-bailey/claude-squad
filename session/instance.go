@@ -403,24 +403,35 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 
 // Kill terminates the instance and cleans up all resources
 func (i *Instance) Kill() error {
-	if !i.isStarted() {
-		// If instance was never started, just return success
+	// Snapshot handles under lock and clear the started flag up-front so a
+	// concurrent or repeated Kill bails out before touching the same
+	// resources twice. Resource cleanup (tmux Close / worktree Cleanup) is
+	// then performed without holding the lock.
+	i.mu.Lock()
+	if !i.started {
+		i.mu.Unlock()
 		return nil
 	}
+	tmuxSess := i.tmuxSession
+	gitWT := i.gitWorktree
+	i.started = false
+	i.tmuxSession = nil
+	i.gitWorktree = nil
+	i.mu.Unlock()
 
 	var errs []error
 
 	// Always try to cleanup both resources, even if one fails
 	// Clean up tmux session first since it's using the git worktree
-	if ts := i.getTmuxSession(); ts != nil {
-		if err := ts.Close(); err != nil {
+	if tmuxSess != nil {
+		if err := tmuxSess.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to close tmux session: %w", err))
 		}
 	}
 
 	// Then clean up git worktree (workspace terminals don't have one)
-	if gw := i.getGitWorktree(); gw != nil && !i.IsWorkspaceTerminal {
-		if err := gw.Cleanup(); err != nil {
+	if gitWT != nil && !i.IsWorkspaceTerminal {
+		if err := gitWT.Cleanup(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to cleanup git worktree: %w", err))
 		}
 	}
