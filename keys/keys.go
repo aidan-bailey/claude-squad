@@ -119,7 +119,7 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	),
 	KeyTab: key.NewBinding(
 		key.WithKeys("tab"),
-		key.WithHelp("tab", "switch tab"),
+		key.WithHelp("tab", "focus"),
 	),
 	KeyResume: key.NewBinding(
 		key.WithKeys("r"),
