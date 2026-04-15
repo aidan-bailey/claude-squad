@@ -7,6 +7,7 @@ import (
 	"claude-squad/ui"
 	"claude-squad/ui/overlay"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"testing"
@@ -453,6 +454,56 @@ func TestScrollDoesNotTriggerInstanceChanged(t *testing.T) {
 
 	_, cmdDown := m.handleKeyPress(tea.KeyMsg{Type: tea.KeyShiftDown})
 	assert.Nil(t, cmdDown, "ScrollDown should not trigger instanceChanged")
+}
+
+// mockInstanceStorage implements config.InstanceStorage for testing.
+type mockInstanceStorage struct{}
+
+func (m *mockInstanceStorage) SaveInstances(_ json.RawMessage) error { return nil }
+func (m *mockInstanceStorage) GetInstances() json.RawMessage        { return nil }
+func (m *mockInstanceStorage) DeleteAllInstances() error             { return nil }
+
+// TestAutoFocusAgentAfterInstanceStart verifies that after a new session finishes
+// starting, the app auto-enters inline attach mode focused on the agent pane.
+func TestAutoFocusAgentAfterInstanceStart(t *testing.T) {
+	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	list := ui.NewList(&sp, false)
+	splitPane := ui.NewSplitPane(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane())
+	menu := ui.NewMenu()
+
+	instance, err := session.NewInstance(session.InstanceOptions{
+		Title:   "test-session",
+		Path:    t.TempDir(),
+		Program: "claude",
+	})
+	require.NoError(t, err)
+	_ = list.AddInstance(instance)
+	list.SetSelectedInstance(0)
+
+	storage, err := session.NewStorage(&mockInstanceStorage{}, t.TempDir())
+	require.NoError(t, err)
+
+	h := &home{
+		ctx:       context.Background(),
+		state:     stateDefault,
+		appConfig: config.DefaultConfig(),
+		list:      list,
+		splitPane: splitPane,
+		menu:      menu,
+		storage:   storage,
+	}
+
+	// Simulate instanceStartedMsg (no prompt, no error)
+	msg := instanceStartedMsg{
+		instance:        instance,
+		err:             nil,
+		promptAfterName: false,
+	}
+	model, _ := h.Update(msg)
+	homeModel := model.(*home)
+
+	assert.Equal(t, stateInlineAttach, homeModel.state, "should auto-focus into inline attach")
+	assert.Equal(t, ui.FocusAgent, homeModel.splitPane.GetFocusedPane(), "should focus agent pane")
 }
 
 // TestConfirmationModalVisualAppearance tests that confirmation modal has distinct visual appearance

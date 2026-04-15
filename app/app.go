@@ -556,8 +556,10 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				msg.instance.Prompt = ""
 			}
-			m.menu.SetState(ui.StateDefault)
-			m.showHelpScreen(helpStart(msg.instance), nil)
+			// Auto-focus agent pane and capture input
+			m.splitPane.SetFocusedPane(ui.FocusAgent)
+			m.state = stateInlineAttach
+			m.menu.SetState(ui.StateInlineAttach)
 		}
 
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
