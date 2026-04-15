@@ -15,6 +15,7 @@ import (
 const readyIcon = "● "
 const promptingIcon = "● "
 const pausedIcon = "⏸ "
+const deletingIcon = "✕ "
 const workspaceTerminalIcon = "◆ "
 
 var readyStyle = lipgloss.NewStyle().
@@ -31,6 +32,9 @@ var removedLinesStyle = lipgloss.NewStyle().
 
 var pausedStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#888888"})
+
+var deletingStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#cc6666", Dark: "#cc6666"})
 
 var workspaceTerminalStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#6c71c4", Dark: "#6c71c4"})
@@ -225,6 +229,8 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 			join = fmt.Sprintf("%s%s ", workspaceTerminalStyle.Render(workspaceTerminalIcon), r.spinner.View())
 		} else if i.Status == session.Prompting {
 			join = fmt.Sprintf("%s%s", workspaceTerminalStyle.Render(workspaceTerminalIcon), promptingStyle.Render(promptingIcon))
+		} else if i.Status == session.Deleting {
+			join = deletingStyle.Render(deletingIcon)
 		} else {
 			join = workspaceTerminalStyle.Render(workspaceTerminalIcon)
 		}
@@ -238,6 +244,8 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 			join = readyStyle.Render(readyIcon)
 		case session.Paused:
 			join = pausedStyle.Render(pausedIcon)
+		case session.Deleting:
+			join = deletingStyle.Render(deletingIcon)
 		default:
 		}
 	}

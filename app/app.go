@@ -141,6 +141,9 @@ type home struct {
 	workspacePicker *overlay.WorkspacePicker
 	// pendingAction stores the action to execute after confirmation
 	pendingAction tea.Cmd
+	// pendingPreAction runs synchronously in the main goroutine before the
+	// pendingAction Cmd is dispatched. Used to set Deleting status immediately.
+	pendingPreAction func()
 	// pendingDir is the directory path awaiting workspace registration confirmation
 	pendingDir string
 
@@ -401,7 +404,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		selected := m.list.GetSelectedInstance()
 		var active []*session.Instance
 		for _, inst := range allInstances {
-			if inst.Started() && !inst.Paused() {
+			if inst.Started() && !inst.Paused() && inst.Status != session.Deleting {
 				active = append(active, inst)
 			}
 		}
@@ -510,6 +513,16 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.splitPane.CleanupTerminalForInstance(msg.title)
 		m.list.RemoveInstanceByTitle(msg.title)
 		return m, m.instanceChanged()
+	case killFailedMsg:
+		// Revert instance status on failed deletion.
+		for _, inst := range m.list.GetInstances() {
+			if inst.Title == msg.title {
+				inst.SetStatus(msg.previousStatus)
+				break
+			}
+		}
+		log.ErrorLog.Printf("failed to delete session %q: %v", msg.title, msg.err)
+		return m, tea.Batch(m.handleError(msg.err), m.instanceChanged())
 	case pauseInstanceMsg:
 		// Terminal cleanup runs here in the main goroutine, not in the Cmd goroutine.
 		m.splitPane.CleanupTerminalForInstance(msg.title)
@@ -571,16 +584,27 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// persistableInstances filters out instances with transient Deleting status.
+func persistableInstances(instances []*session.Instance) []*session.Instance {
+	var result []*session.Instance
+	for _, inst := range instances {
+		if inst.Status != session.Deleting {
+			result = append(result, inst)
+		}
+	}
+	return result
+}
+
 func (m *home) handleQuit() (tea.Model, tea.Cmd) {
 	if len(m.slots) > 0 {
 		m.saveCurrentSlot()
 		for _, slot := range m.slots {
-			if err := slot.storage.SaveInstances(slot.list.GetInstances()); err != nil {
+			if err := slot.storage.SaveInstances(persistableInstances(slot.list.GetInstances())); err != nil {
 				log.ErrorLog.Printf("failed to save workspace %s: %v", slot.wsCtx.Name, err)
 			}
 		}
 	} else {
-		if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+		if err := m.storage.SaveInstances(persistableInstances(m.list.GetInstances())); err != nil {
 			return m, m.handleError(err)
 		}
 	}
@@ -916,11 +940,15 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	if m.state == stateConfirm {
 		shouldClose := m.confirmationOverlay.HandleKeyPress(msg)
 		if shouldClose {
+			if m.pendingPreAction != nil {
+				m.pendingPreAction()
+				m.pendingPreAction = nil
+			}
 			cmd := m.pendingAction
 			m.pendingAction = nil
 			m.confirmationOverlay = nil
 			m.state = stateDefault
-			return m, cmd
+			return m, tea.Batch(cmd, m.instanceChanged())
 		}
 		return m, nil
 	}
@@ -1032,28 +1060,38 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, m.instanceChanged()
 	case keys.KeyKill:
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Status == session.Loading || selected.IsWorkspaceTerminal {
+		if selected == nil || selected.Status == session.Loading || selected.Status == session.Deleting || selected.IsWorkspaceTerminal {
 			return m, nil
 		}
 
-		// Create the kill action as a tea.Cmd. This runs in a goroutine,
-		// so it must only perform I/O — state mutations happen when the
-		// returned message is processed in the main event loop.
 		title := selected.Title
+		previousStatus := selected.Status
+
+		// preAction runs synchronously in the main goroutine when the user
+		// confirms. It marks the instance as Deleting immediately.
+		preAction := func() {
+			selected.SetStatus(session.Deleting)
+		}
+
+		// killAction runs in a goroutine — only I/O, no state mutations.
 		killAction := func() tea.Msg {
 			// Get worktree and check if branch is checked out
 			worktree, err := selected.GetGitWorktree()
 			if err != nil {
-				return err
+				return killFailedMsg{title: title, previousStatus: previousStatus, err: err}
 			}
 
 			checkedOut, err := worktree.IsBranchCheckedOut()
 			if err != nil {
-				return err
+				return killFailedMsg{title: title, previousStatus: previousStatus, err: err}
 			}
 
 			if checkedOut {
-				return fmt.Errorf("instance %s is currently checked out", selected.Title)
+				return killFailedMsg{
+					title:          title,
+					previousStatus: previousStatus,
+					err:            fmt.Errorf("instance %s is currently checked out", selected.Title),
+				}
 			}
 
 			// Kill the instance (tmux + worktree cleanup)
@@ -1063,19 +1101,18 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 			// Delete from persistent storage
 			if err := m.storage.DeleteInstance(selected.Title); err != nil {
-				return err
+				return killFailedMsg{title: title, previousStatus: previousStatus, err: err}
 			}
 
-			// Signal the main loop to remove from the list
 			return killInstanceMsg{title: title}
 		}
 
-		// Show confirmation modal
 		message := fmt.Sprintf("[!] Kill session '%s'?", selected.Title)
+		m.pendingPreAction = preAction
 		return m, m.confirmAction(message, killAction)
 	case keys.KeySubmit:
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Status == session.Loading || selected.IsWorkspaceTerminal {
+		if selected == nil || selected.Status == session.Loading || selected.Status == session.Deleting || selected.IsWorkspaceTerminal {
 			return m, nil
 		}
 
@@ -1098,7 +1135,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, m.confirmAction(message, pushAction)
 	case keys.KeyCheckout:
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Status == session.Loading || selected.IsWorkspaceTerminal {
+		if selected == nil || selected.Status == session.Loading || selected.Status == session.Deleting || selected.IsWorkspaceTerminal {
 			return m, nil
 		}
 
@@ -1118,7 +1155,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, nil
 	case keys.KeyResume:
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Status == session.Loading || selected.IsWorkspaceTerminal {
+		if selected == nil || selected.Status == session.Loading || selected.Status == session.Deleting || selected.IsWorkspaceTerminal {
 			return m, nil
 		}
 		if err := selected.Resume(); err != nil {
@@ -1130,7 +1167,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Paused() || selected.Status == session.Loading || !selected.TmuxAlive() {
+		if selected == nil || selected.Paused() || selected.Status == session.Loading || selected.Status == session.Deleting || !selected.TmuxAlive() {
 			return m, nil
 		}
 		m.state = stateInlineAttach
@@ -1141,7 +1178,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Paused() || selected.Status == session.Loading || !selected.TmuxAlive() {
+		if selected == nil || selected.Paused() || selected.Status == session.Loading || selected.Status == session.Deleting || !selected.TmuxAlive() {
 			return m, nil
 		}
 		m.splitPane.SetFocusedPane(ui.FocusAgent)
@@ -1153,7 +1190,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Paused() || selected.Status == session.Loading || !selected.TmuxAlive() {
+		if selected == nil || selected.Paused() || selected.Status == session.Loading || selected.Status == session.Deleting || !selected.TmuxAlive() {
 			return m, nil
 		}
 		m.splitPane.SetFocusedPane(ui.FocusTerminal)
@@ -1195,7 +1232,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
 	case keys.KeyQuickInteract:
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Paused() || !selected.TmuxAlive() || selected.Status == session.Loading {
+		if selected == nil || selected.Paused() || !selected.TmuxAlive() || selected.Status == session.Loading || selected.Status == session.Deleting {
 			return m, nil
 		}
 		if m.splitPane.IsDiffVisible() {
@@ -1207,7 +1244,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, tea.WindowSize()
 	case keys.KeyQuickInputAgent:
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Paused() || !selected.TmuxAlive() || selected.Status == session.Loading {
+		if selected == nil || selected.Paused() || !selected.TmuxAlive() || selected.Status == session.Loading || selected.Status == session.Deleting {
 			return m, nil
 		}
 		if m.splitPane.IsDiffVisible() {
@@ -1219,7 +1256,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, tea.WindowSize()
 	case keys.KeyQuickInputTerminal:
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Paused() || !selected.TmuxAlive() || selected.Status == session.Loading {
+		if selected == nil || selected.Paused() || !selected.TmuxAlive() || selected.Status == session.Loading || selected.Status == session.Deleting {
 			return m, nil
 		}
 		if m.splitPane.IsDiffVisible() {
@@ -1234,7 +1271,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Paused() || selected.Status == session.Loading || !selected.TmuxAlive() {
+		if selected == nil || selected.Paused() || selected.Status == session.Loading || selected.Status == session.Deleting || !selected.TmuxAlive() {
 			return m, nil
 		}
 		// Terminal pane focused: attach to terminal session
@@ -1316,6 +1353,14 @@ type instanceChangedMsg struct{}
 // handles the list removal so it doesn't race with rendering.
 type killInstanceMsg struct {
 	title string
+}
+
+// killFailedMsg is returned when background cleanup fails. The main event
+// loop reverts the instance status so the user can retry.
+type killFailedMsg struct {
+	title          string
+	previousStatus session.Status
+	err            error
 }
 
 // pauseInstanceMsg is returned by the pauseAction goroutine after the instance
@@ -1427,6 +1472,7 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 	// Set callbacks for confirmation and cancellation
 	m.confirmationOverlay.OnCancel = func() {
 		m.pendingAction = nil
+		m.pendingPreAction = nil
 	}
 
 	return nil
