@@ -438,15 +438,15 @@ func TestMultipleConfirmationsDontInterfere(t *testing.T) {
 func TestScrollDoesNotTriggerInstanceChanged(t *testing.T) {
 	s := spinner.New(spinner.WithSpinner(spinner.MiniDot))
 	m := &home{
-		ctx:          context.Background(),
-		state:        stateDefault,
-		appConfig:    config.DefaultConfig(),
-		list:         ui.NewList(&s, false),
-		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
-		menu:         ui.NewMenu(),
+		ctx:       context.Background(),
+		state:     stateDefault,
+		appConfig: config.DefaultConfig(),
+		list:      ui.NewList(&s, false),
+		splitPane: ui.NewSplitPane(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
+		menu:      ui.NewMenu(),
 	}
 	m.list.SetSize(80, 24)
-	m.tabbedWindow.SetSize(80, 24)
+	m.splitPane.SetSize(80, 24)
 
 	_, cmdUp := m.handleKeyPress(tea.KeyMsg{Type: tea.KeyShiftUp})
 	assert.Nil(t, cmdUp, "ScrollUp should not trigger instanceChanged")
