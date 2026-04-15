@@ -14,20 +14,29 @@ import (
 	"time"
 )
 
+// reloadInstances reads state.json and returns the fresh instance set.
+// Called every tick so the daemon observes instances added or removed
+// by the main app (DAEMON-03). configDir is the workspace config
+// directory; if empty, falls back to GetConfigDir().
+func reloadInstances(configDir string) ([]*session.Instance, error) {
+	state := config.LoadStateFrom(configDir)
+	storage, err := session.NewStorage(state, configDir)
+	if err != nil {
+		return nil, fmt.Errorf("open storage: %w", err)
+	}
+	return storage.LoadInstances()
+}
+
 // RunDaemon runs the daemon process which iterates over all sessions and runs AutoYes mode on them.
 // It's expected that the main process kills the daemon when the main process starts.
 // configDir is the workspace config directory; if empty, falls back to GetConfigDir().
 func RunDaemon(cfg *config.Config, configDir string) error {
 	log.InfoLog.Printf("starting daemon")
-	state := config.LoadStateFrom(configDir)
-	storage, err := session.NewStorage(state, configDir)
-	if err != nil {
-		return fmt.Errorf("failed to initialize storage: %w", err)
-	}
 
-	instances, err := storage.LoadInstances()
+	// Initial load so that startup errors fail fast (e.g. corrupt state.json).
+	instances, err := reloadInstances(configDir)
 	if err != nil {
-		return fmt.Errorf("failed to load instacnes: %w", err)
+		return fmt.Errorf("failed to load instances: %w", err)
 	}
 
 	pollInterval := time.Duration(cfg.DaemonPollInterval) * time.Millisecond
@@ -42,6 +51,18 @@ func RunDaemon(cfg *config.Config, configDir string) error {
 		defer wg.Done()
 		ticker := time.NewTimer(pollInterval)
 		for {
+			// Reload from disk every tick so the daemon picks up
+			// instances created or deleted by the main app since the
+			// last poll (DAEMON-03). On error keep using the previous
+			// list to stay resilient to transient I/O.
+			if fresh, err := reloadInstances(configDir); err != nil {
+				if everyN.ShouldLog() {
+					log.WarningLog.Printf("daemon reload failed: %v", err)
+				}
+			} else {
+				instances = fresh
+			}
+
 			for _, instance := range instances {
 				// Respect per-instance AutoYes (DAEMON-13). The user may
 				// have opted individual instances out via the main app.
