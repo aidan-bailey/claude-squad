@@ -49,7 +49,7 @@ type Menu struct {
 	height, width int
 	state         MenuState
 	instance      *session.Instance
-	activeTab     int
+	focusedPane   int
 
 	// keyDown is the key which is pressed. The default is -1.
 	keyDown keys.KeyName
@@ -63,10 +63,10 @@ var inlineAttachMenuOptions = []keys.KeyName{}
 
 func NewMenu() *Menu {
 	return &Menu{
-		options:   defaultMenuOptions,
-		state:     StateEmpty,
-		activeTab: 0,
-		keyDown:   -1,
+		options:     defaultMenuOptions,
+		state:       StateEmpty,
+		focusedPane: 0,
+		keyDown:     -1,
 	}
 }
 
@@ -100,7 +100,7 @@ func (m *Menu) SetInstance(instance *session.Instance) {
 
 // SetFocusedPane updates the currently focused pane
 func (m *Menu) SetFocusedPane(pane int) {
-	m.activeTab = pane
+	m.focusedPane = pane
 	m.updateOptions()
 }
 

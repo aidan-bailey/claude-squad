@@ -3,6 +3,7 @@ package ui
 import (
 	"claude-squad/log"
 	"claude-squad/session"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -276,19 +277,8 @@ func (s *SplitPane) buildSeparator() string {
 		leftLen = remaining
 	}
 
-	left := separatorStyle.Render(repeatChar('\u2500', leftLen))
-	right := separatorStyle.Render(repeatChar('\u2500', rightLen))
+	left := separatorStyle.Render(strings.Repeat("─", leftLen))
+	right := separatorStyle.Render(strings.Repeat("─", rightLen))
 
 	return left + labelRendered + right
-}
-
-func repeatChar(ch rune, n int) string {
-	if n <= 0 {
-		return ""
-	}
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = byte(ch)
-	}
-	return string(b)
 }

@@ -86,9 +86,10 @@ claude-squad --workspace <name>
 | `p` | Push branch |
 | `c` | Checkout branch |
 | `i` | Quick input bar (send text to agent's tmux session) |
-| `tab` | Switch tab (preview/diff/terminal) |
+| `tab` | Switch focus (agent/terminal) |
+| `d` | Toggle diff overlay |
 | `up`/`k`, `down`/`j` | Navigate list |
-| `shift+up`/`shift+down` | Scroll diff/preview |
+| `shift+up`/`shift+down` | Scroll focused pane |
 | `W` | Workspace picker |
 | `[`/`]` | Previous/next workspace tab |
 | `?` | Help |
@@ -120,7 +121,7 @@ The app follows Bubble Tea's Model-View-Update pattern. The single-threaded even
 - **`session/tmux/`** — Tmux session management. Creates/attaches terminal sessions, captures pane content, detects prompts (for auto-yes), sends keystrokes. Platform-specific files: `tmux_unix.go`, `tmux_windows.go`.
 - **`config/`** — Configuration (`config.json`), state (`state.json`), profiles, and workspace registry (`workspace.go`). Key types: `WorkspaceContext` (carries resolved config dir through the app), `InstanceStorage`, `AppState`, `StateManager`. `LoadConfigFrom("")`/`LoadStateFrom("")` accept empty string as "use default directory".
 - **`daemon/`** — Background auto-yes mode. Polls instances, detects prompts, auto-presses Enter. Platform-specific: `daemon_unix.go`, `daemon_windows.go`.
-- **`ui/`** — Bubble Tea view components. Left panel (`list.go`, 30% width), right panel (`tabbed_window.go`, 70% width) with preview/diff/terminal tabs. `quick_input.go` provides an inline input bar for sending text to tmux. `workspace_tab_bar.go` renders workspace tabs. `ui/overlay/` has modal dialogs (text input, confirmation, branch picker, profile picker, workspace picker).
+- **`ui/`** — Bubble Tea view components. Left panel (`list.go`, 20% width), right panel (`split_pane.go`, 80% width) with agent and terminal panes stacked vertically (70/30 split) and a hotkey-toggled diff overlay. `quick_input.go` provides an inline input bar for sending text to tmux. `workspace_tab_bar.go` renders workspace tabs. `ui/overlay/` has modal dialogs (text input, confirmation, branch picker, profile picker, workspace picker).
 - **`keys/`** — Keybinding definitions. Enum-based `KeyName` with global maps for lookup.
 - **`cmd/`** — `Executor` interface wrapping `os/exec` for testability.
 - **`log/`** — Centralized logging to `$TMPDIR/claudesquad.log` with Info/Warning/Error loggers and rate limiting.
