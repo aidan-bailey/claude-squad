@@ -20,13 +20,19 @@ const (
 	FocusTerminal            // bottom pane
 )
 
+var dimBorderColor = lipgloss.AdaptiveColor{Light: "#999999", Dark: "#555555"}
+
 var (
-	splitPaneBorder = lipgloss.NewStyle().
-			BorderForeground(highlightColor).
-			Border(lipgloss.NormalBorder())
-	separatorStyle = lipgloss.NewStyle().
-			Foreground(highlightColor)
-	focusedSeparatorStyle = lipgloss.NewStyle().
+	// paneBodyBorder renders left, right, bottom — top line is built manually with an inline title.
+	paneBodyBorder = lipgloss.NewStyle().
+			BorderForeground(dimBorderColor).
+			Border(lipgloss.RoundedBorder(), false, true, true, true)
+	focusedPaneBodyBorder = lipgloss.NewStyle().
+				BorderForeground(highlightColor).
+				Border(lipgloss.RoundedBorder(), false, true, true, true)
+	paneTitleStyle = lipgloss.NewStyle().
+			Foreground(dimBorderColor)
+	focusedPaneTitleStyle = lipgloss.NewStyle().
 				Foreground(highlightColor).
 				Bold(true)
 	diffOverlayTitleStyle = lipgloss.NewStyle().
@@ -64,15 +70,18 @@ func (s *SplitPane) SetInstance(instance *session.Instance) {
 }
 
 func (s *SplitPane) SetSize(width, height int) {
-	s.width = AdjustPreviewWidth(width)
+	s.width = width
 	s.height = height
 
-	contentWidth := s.width - splitPaneBorder.GetHorizontalFrameSize()
-	borderV := splitPaneBorder.GetVerticalFrameSize()
+	borderH := paneBodyBorder.GetHorizontalFrameSize()
+	bodyBorderV := paneBodyBorder.GetVerticalFrameSize() // bottom border only = 1
 
-	// 1 line for the separator between panes
-	separatorHeight := 1
-	availableHeight := height - borderV - separatorHeight
+	contentWidth := s.width - borderH
+
+	// Each pane = 1 (top border w/ title) + content + bodyBorderV (bottom border)
+	// Two panes: 2 top lines + 2× bodyBorderV + agentContent + terminalContent = height
+	paneChrome := 2 * (1 + bodyBorderV) // 2 panes × (top line + bottom border)
+	availableHeight := height - paneChrome
 
 	// 70/30 split
 	agentHeight := int(float64(availableHeight) * 0.7)
@@ -81,8 +90,8 @@ func (s *SplitPane) SetSize(width, height int) {
 	s.agent.SetSize(contentWidth, agentHeight)
 	s.terminal.SetSize(contentWidth, terminalHeight)
 
-	// Diff overlay gets the full content area
-	s.diff.SetSize(contentWidth, height-borderV)
+	// Diff overlay uses a single pane
+	s.diff.SetSize(contentWidth, height-1-bodyBorderV) // 1 top line + bottom border
 }
 
 func (s *SplitPane) GetAgentSize() (width, height int) {
@@ -215,75 +224,69 @@ func (s *SplitPane) String() string {
 		return ""
 	}
 
-	borderV := splitPaneBorder.GetVerticalFrameSize()
-
 	if s.diffVisible {
-		// Render diff overlay filling the full area
+		bodyBorderV := focusedPaneBodyBorder.GetVerticalFrameSize()
+		borderH := focusedPaneBodyBorder.GetHorizontalFrameSize()
+		contentWidth := s.width - borderH
 		diffContent := s.diff.String()
-		title := diffOverlayTitleStyle.Render(" Diff ") +
-			lipgloss.NewStyle().
-				Foreground(lipgloss.AdaptiveColor{Light: "#808080", Dark: "#808080"}).
-				Render("(d/Esc to close)")
-		window := splitPaneBorder.Render(
-			lipgloss.Place(
-				s.width-splitPaneBorder.GetHorizontalFrameSize(),
-				s.height-borderV,
-				lipgloss.Left, lipgloss.Top,
-				diffContent))
-		return lipgloss.JoinVertical(lipgloss.Left, title, window)
+		topLine := s.buildTopBorder(" Diff (d/Esc to close) ", true)
+		body := focusedPaneBodyBorder.
+			Width(contentWidth).
+			Height(s.height - 1 - bodyBorderV). // -1 for top line
+			Render(diffContent)
+		return lipgloss.JoinVertical(lipgloss.Left, topLine, body)
 	}
 
-	// Render both panes stacked
-	agentContent := s.agent.String()
-	terminalContent := s.terminal.String()
+	agentBox := s.renderPane(" Agent ", s.agent.String(), s.agent.height, s.focusedPane == FocusAgent)
+	terminalBox := s.renderPane(" Terminal ", s.terminal.String(), s.terminal.height, s.focusedPane == FocusTerminal)
 
-	// Build separator line with focus indicator
-	sep := s.buildSeparator()
-
-	// Stack: agent, separator, terminal
-	stacked := lipgloss.JoinVertical(lipgloss.Left,
-		agentContent,
-		sep,
-		terminalContent,
-	)
-
-	window := splitPaneBorder.Render(
-		lipgloss.Place(
-			s.width-splitPaneBorder.GetHorizontalFrameSize(),
-			s.height-borderV,
-			lipgloss.Left, lipgloss.Top,
-			stacked))
-
-	return window
+	return lipgloss.JoinVertical(lipgloss.Left, agentBox, terminalBox)
 }
 
-// buildSeparator creates the horizontal separator between panes with a focus label.
-func (s *SplitPane) buildSeparator() string {
-	contentWidth := s.width - splitPaneBorder.GetHorizontalFrameSize()
+// renderPane wraps content in a bordered box with the title embedded in the top border line.
+func (s *SplitPane) renderPane(title, content string, innerHeight int, focused bool) string {
+	borderH := paneBodyBorder.GetHorizontalFrameSize()
+	contentWidth := s.width - borderH
 
-	var label string
-	if s.focusedPane == FocusTerminal {
-		label = " Terminal "
-	} else {
-		label = " Agent "
+	topLine := s.buildTopBorder(title, focused)
+
+	border := paneBodyBorder
+	if focused {
+		border = focusedPaneBodyBorder
 	}
 
-	labelRendered := focusedSeparatorStyle.Render(label)
-	labelWidth := lipgloss.Width(labelRendered)
+	body := border.
+		Width(contentWidth).
+		Height(innerHeight).
+		Render(content)
 
-	remaining := contentWidth - labelWidth
-	if remaining < 0 {
-		remaining = 0
+	return lipgloss.JoinVertical(lipgloss.Left, topLine, body)
+}
+
+// buildTopBorder creates a top border line with an inline title: ╭── Title ─────────╮
+func (s *SplitPane) buildTopBorder(title string, focused bool) string {
+	borderColor := dimBorderColor
+	titleStyle := paneTitleStyle
+	if focused {
+		borderColor = highlightColor
+		titleStyle = focusedPaneTitleStyle
 	}
-	leftLen := 2
-	rightLen := remaining - leftLen
-	if rightLen < 0 {
-		rightLen = 0
-		leftLen = remaining
+	bc := lipgloss.NewStyle().Foreground(borderColor)
+
+	titleRendered := titleStyle.Render(title)
+	titleWidth := lipgloss.Width(titleRendered)
+
+	// ╭ + ── + title + ─── ... ─── + ╮
+	innerWidth := s.width - 2 // minus corners
+	leftDashes := 2
+	rightDashes := innerWidth - leftDashes - titleWidth
+	if rightDashes < 0 {
+		rightDashes = 0
 	}
 
-	left := separatorStyle.Render(strings.Repeat("─", leftLen))
-	right := separatorStyle.Render(strings.Repeat("─", rightLen))
-
-	return left + labelRendered + right
+	return bc.Render("╭") +
+		bc.Render(strings.Repeat("─", leftDashes)) +
+		titleRendered +
+		bc.Render(strings.Repeat("─", rightDashes)) +
+		bc.Render("╮")
 }

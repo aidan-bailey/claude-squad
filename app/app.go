@@ -29,6 +29,9 @@ var inlineAttachHintStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#874BFD", Dark: "#7D56F4"}).
 	Bold(true)
 
+var statusLineStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#999999", Dark: "#555555"})
+
 // Run is the main entrypoint into the application.
 // wsCtx is the resolved workspace context; nil means global.
 // registry is passed through for the startup workspace picker.
@@ -282,10 +285,9 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	listWidth := int(float32(msg.Width) * 0.2)
 	paneWidth := msg.Width - listWidth
 
-	// Menu takes 10% of height, list and window take 90%
-	contentHeight := int(float32(msg.Height)*0.9) - m.tabBar.Height()
-	menuHeight := msg.Height - contentHeight - m.tabBar.Height() - 1 // minus 1 for error box
-	m.errBox.SetSize(int(float32(msg.Width)*0.9), 1)                 // error box takes 1 row
+	// Content gets all height minus tab bar, status line (1), and error box (1).
+	contentHeight := msg.Height - m.tabBar.Height() - 2
+	m.errBox.SetSize(int(float32(msg.Width)*0.9), 1)
 
 	quickInputHeight := 0
 	if m.state == stateQuickInteract && m.quickInputBar != nil {
@@ -308,7 +310,6 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	if err := m.list.SetSessionPreviewSize(agentWidth, agentHeight); err != nil {
 		log.ErrorLog.Print(err)
 	}
-	m.menu.SetSize(msg.Width, menuHeight)
 }
 
 func (m *home) Init() tea.Cmd {
@@ -1435,7 +1436,7 @@ func (m *home) activateWorkspace(ws config.Workspace) error {
 	if m.lastWidth > 0 && m.lastHeight > 0 {
 		listWidth := int(float32(m.lastWidth) * 0.2)
 		paneWidth := m.lastWidth - listWidth
-		contentHeight := int(float32(m.lastHeight)*0.9) - m.tabBar.Height()
+		contentHeight := m.lastHeight - m.tabBar.Height() - 2
 		list.SetSize(listWidth, contentHeight)
 		splitPane.SetSize(paneWidth, contentHeight)
 	}
@@ -1629,7 +1630,8 @@ func (m *home) View() string {
 	if tabBarStr := m.tabBar.String(); tabBarStr != "" {
 		sections = append(sections, tabBarStr)
 	}
-	sections = append(sections, listAndPreview, m.menu.String(), m.errBox.String())
+	statusLine := statusLineStyle.Render("? help · q quit")
+	sections = append(sections, listAndPreview, statusLine, m.errBox.String())
 
 	mainView := lipgloss.JoinVertical(
 		lipgloss.Center,

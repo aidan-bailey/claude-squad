@@ -56,8 +56,9 @@ func (h helpTypeGeneral) toContent() string {
 		"",
 		headerStyle.Render("Other:"),
 		keyStyle.Render("W")+descStyle.Render("         - Switch workspace"),
-		keyStyle.Render("tab")+descStyle.Render("       - Switch between preview, diff, and terminal tabs"),
-		keyStyle.Render("shift-↓/↑")+descStyle.Render(" - Scroll in preview/diff/terminal view"),
+		keyStyle.Render("tab")+descStyle.Render("       - Switch focus between agent and terminal"),
+		keyStyle.Render("d")+descStyle.Render("         - Toggle diff overlay"),
+		keyStyle.Render("shift-↓/↑")+descStyle.Render(" - Scroll in focused pane"),
 		keyStyle.Render("q")+descStyle.Render("         - Quit the application"),
 	)
 	return content
