@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/atotto/clipboard"
@@ -74,6 +75,12 @@ type Instance struct {
 	tmuxSession *tmux.TmuxSession
 	// gitWorktree is the git worktree for the instance.
 	gitWorktree *git.GitWorktree
+
+	// mu guards concurrent access to fields that can be read from
+	// tick-fanout goroutines (status, diffStats, Branch) and from
+	// lifecycle Cmd goroutines (tmuxSession, gitWorktree, started).
+	// Held for writes; RLock for reads. Do not hold across I/O.
+	mu sync.RWMutex
 }
 
 // ToInstanceData converts an Instance to its serializable form
@@ -223,7 +230,16 @@ func (i *Instance) RepoName() (string, error) {
 }
 
 func (i *Instance) SetStatus(status Status) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	i.Status = status
+}
+
+// GetStatus returns the current status under a read lock.
+func (i *Instance) GetStatus() Status {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return i.Status
 }
 
 // SetSelectedBranch sets the branch to use when starting the instance.
