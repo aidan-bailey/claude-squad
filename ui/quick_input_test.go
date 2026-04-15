@@ -39,5 +39,5 @@ func TestQuickInputBar_EmptyEnter(t *testing.T) {
 
 func TestQuickInputBar_Height(t *testing.T) {
 	bar := NewQuickInputBar()
-	assert.Equal(t, 3, bar.Height())
+	assert.Equal(t, 2, bar.Height())
 }

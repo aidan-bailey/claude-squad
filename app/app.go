@@ -289,14 +289,10 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	contentHeight := msg.Height - m.tabBar.Height() - 2
 	m.errBox.SetSize(int(float32(msg.Width)*0.9), 1)
 
-	quickInputHeight := 0
 	if m.state == stateQuickInteract && m.quickInputBar != nil {
-		quickInputHeight = m.quickInputBar.Height()
-		m.quickInputBar.SetWidth(ui.AdjustPreviewWidth(paneWidth))
-	} else if m.state == stateInlineAttach {
-		quickInputHeight = 1 // hint takes 1 line
+		m.quickInputBar.SetWidth(int(float32(msg.Width) * 0.5))
 	}
-	m.splitPane.SetSize(paneWidth, contentHeight-quickInputHeight)
+	m.splitPane.SetSize(paneWidth, contentHeight)
 	m.list.SetSize(listWidth, contentHeight)
 
 	if m.textInputOverlay != nil {
@@ -1618,20 +1614,24 @@ func (m *home) slotNames() []string {
 func (m *home) View() string {
 	listView := m.list.String()
 	rightContent := m.splitPane.String()
-	if m.state == stateQuickInteract && m.quickInputBar != nil {
-		rightContent = lipgloss.JoinVertical(lipgloss.Left, rightContent, m.quickInputBar.View())
-	} else if m.state == stateInlineAttach {
-		hint := inlineAttachHintStyle.Render("▶ CAPTURING INPUT  ·  Esc to detach  ·  O for fullscreen")
-		rightContent = lipgloss.JoinVertical(lipgloss.Left, rightContent, hint)
-	}
 	listAndPreview := lipgloss.JoinHorizontal(lipgloss.Top, listView, rightContent)
 
 	sections := []string{}
 	if tabBarStr := m.tabBar.String(); tabBarStr != "" {
 		sections = append(sections, tabBarStr)
 	}
-	statusLine := statusLineStyle.Render("? help · q quit")
-	sections = append(sections, listAndPreview, statusLine, m.errBox.String())
+
+	// Bottom bar: quick input or inline attach hint replaces the status line
+	if m.state == stateQuickInteract && m.quickInputBar != nil {
+		// Quick input is 2 lines, replaces both status line and error box so panes don't shift.
+		sections = append(sections, listAndPreview, m.quickInputBar.View())
+	} else if m.state == stateInlineAttach {
+		hint := inlineAttachHintStyle.Render("▶ CAPTURING INPUT  ·  Esc to detach  ·  O for fullscreen")
+		sections = append(sections, listAndPreview, hint, m.errBox.String())
+	} else {
+		statusLine := statusLineStyle.Render("? help · q quit")
+		sections = append(sections, listAndPreview, statusLine, m.errBox.String())
+	}
 
 	mainView := lipgloss.JoinVertical(
 		lipgloss.Center,

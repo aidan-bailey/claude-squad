@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"strings"
-
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -18,8 +16,7 @@ const (
 )
 
 var (
-	quickInputHintStyle      = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#808080", Dark: "#808080"})
-	quickInputSeparatorStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#DDDADA", Dark: "#3C3C3C"})
+	quickInputHintStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#808080", Dark: "#808080"})
 )
 
 // QuickInputBar is a single-line input bar for quick interactions with tmux sessions.
@@ -65,17 +62,12 @@ func (q *QuickInputBar) SetWidth(w int) {
 
 // Height returns the number of lines the input bar occupies.
 func (q *QuickInputBar) Height() int {
-	return 3 // separator + input + hint
+	return 2 // input + hint
 }
 
 // View renders the input bar.
 func (q *QuickInputBar) View() string {
-	w := q.width
-	if w <= 0 {
-		w = 40
-	}
-	separator := quickInputSeparatorStyle.Render(strings.Repeat("─", w))
 	input := q.textInput.View()
 	hint := quickInputHintStyle.Render("Enter to send · Esc to cancel")
-	return lipgloss.JoinVertical(lipgloss.Left, separator, input, hint)
+	return lipgloss.JoinVertical(lipgloss.Left, input, hint)
 }
