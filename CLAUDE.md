@@ -81,11 +81,16 @@ claude-squad --workspace <name>
 | `N` | New instance with prompt |
 | `enter`/`o` | Inline attach (interactive preview) |
 | `O` | Full-screen attach |
+| `ctrl+a` | Focus agent pane and capture input |
+| `ctrl+t` | Focus terminal pane and capture input |
+| `ctrl+q` | Detach from inline/full-screen attach |
 | `r` | Resume paused instance |
 | `D` | Kill instance |
 | `p` | Push branch |
 | `c` | Checkout branch |
-| `i` | Quick input bar (send text to agent's tmux session) |
+| `i` | Quick input bar (send to focused pane) |
+| `a` | Quick input bar (send to agent) |
+| `t` | Quick input bar (send to terminal) |
 | `tab` | Switch focus (agent/terminal) |
 | `d` | Toggle diff overlay |
 | `up`/`k`, `down`/`j` | Navigate sessions |

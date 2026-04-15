@@ -36,6 +36,13 @@ const (
 	KeyQuickInteract    // Key for quick interaction input bar
 	KeyFullScreenAttach // Key for full-screen attach (existing attach behavior)
 	KeyDiff             // Key for toggling diff overlay
+
+	KeyQuickInputAgent    // Key for quick input targeting agent pane
+	KeyQuickInputTerminal // Key for quick input targeting terminal pane
+	// ctrl+a/ctrl+t are only dispatched in stateDefault, so they don't conflict
+	// with the textinput widget's ctrl+a (LineStart) binding in stateQuickInteract.
+	KeyDirectAttachAgent    // Key for direct attach to agent pane
+	KeyDirectAttachTerminal // Key for direct attach to terminal pane
 )
 
 // GlobalKeyStringsMap is a global, immutable map string to keybinding.
@@ -65,6 +72,10 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"i":          KeyQuickInteract,
 	"O":          KeyFullScreenAttach,
 	"d":          KeyDiff,
+	"a":          KeyQuickInputAgent,
+	"t":          KeyQuickInputTerminal,
+	"ctrl+a":     KeyDirectAttachAgent,
+	"ctrl+t":     KeyDirectAttachTerminal,
 }
 
 // GlobalkeyBindings is a global, immutable map of KeyName tot keybinding.
@@ -152,6 +163,23 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyDiff: key.NewBinding(
 		key.WithKeys("d"),
 		key.WithHelp("d", "diff"),
+	),
+
+	KeyQuickInputAgent: key.NewBinding(
+		key.WithKeys("a"),
+		key.WithHelp("a", "input to agent"),
+	),
+	KeyQuickInputTerminal: key.NewBinding(
+		key.WithKeys("t"),
+		key.WithHelp("t", "input to terminal"),
+	),
+	KeyDirectAttachAgent: key.NewBinding(
+		key.WithKeys("ctrl+a"),
+		key.WithHelp("ctrl+a", "attach agent"),
+	),
+	KeyDirectAttachTerminal: key.NewBinding(
+		key.WithKeys("ctrl+t"),
+		key.WithHelp("ctrl+t", "attach terminal"),
 	),
 
 	// -- Special keybindings --

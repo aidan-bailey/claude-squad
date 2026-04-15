@@ -798,8 +798,8 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, tea.WindowSize()
 		}
 
-		// Esc exits inline attach
-		if msg.Type == tea.KeyEscape {
+		// ctrl+q exits inline attach
+		if msg.Type == tea.KeyCtrlQ {
 			m.state = stateDefault
 			m.menu.SetState(ui.StateDefault)
 			return m, tea.WindowSize()
@@ -839,24 +839,25 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		switch action {
 		case ui.QuickInputSubmit:
 			text := m.quickInputBar.Value()
-			if m.splitPane.GetFocusedPane() == ui.FocusTerminal {
-				if err := m.splitPane.SendTerminalPrompt(text); err != nil {
-					m.quickInputBar = nil
-					m.state = stateDefault
-					m.menu.SetState(ui.StateDefault)
-					return m, tea.Batch(tea.WindowSize(), m.handleError(err))
-				}
-			} else {
-				if err := selected.SendPrompt(text); err != nil {
-					m.quickInputBar = nil
-					m.state = stateDefault
-					m.menu.SetState(ui.StateDefault)
-					return m, tea.Batch(tea.WindowSize(), m.handleError(err))
+			var err error
+			switch m.quickInputBar.Target {
+			case ui.QuickInputTargetTerminal:
+				err = m.splitPane.SendTerminalPrompt(text)
+			case ui.QuickInputTargetAgent:
+				err = selected.SendPrompt(text)
+			default: // QuickInputTargetFocused
+				if m.splitPane.GetFocusedPane() == ui.FocusTerminal {
+					err = m.splitPane.SendTerminalPrompt(text)
+				} else {
+					err = selected.SendPrompt(text)
 				}
 			}
 			m.quickInputBar = nil
 			m.state = stateDefault
 			m.menu.SetState(ui.StateDefault)
+			if err != nil {
+				return m, tea.Batch(tea.WindowSize(), m.handleError(err))
+			}
 			return m, tea.WindowSize()
 		case ui.QuickInputCancel:
 			m.quickInputBar = nil
@@ -1120,6 +1121,30 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		m.state = stateInlineAttach
 		m.menu.SetState(ui.StateInlineAttach)
 		return m, tea.WindowSize()
+	case keys.KeyDirectAttachAgent:
+		if m.list.NumInstances() == 0 {
+			return m, nil
+		}
+		selected := m.list.GetSelectedInstance()
+		if selected == nil || selected.Paused() || selected.Status == session.Loading || !selected.TmuxAlive() {
+			return m, nil
+		}
+		m.splitPane.SetFocusedPane(ui.FocusAgent)
+		m.state = stateInlineAttach
+		m.menu.SetState(ui.StateInlineAttach)
+		return m, tea.WindowSize()
+	case keys.KeyDirectAttachTerminal:
+		if m.list.NumInstances() == 0 {
+			return m, nil
+		}
+		selected := m.list.GetSelectedInstance()
+		if selected == nil || selected.Paused() || selected.Status == session.Loading || !selected.TmuxAlive() {
+			return m, nil
+		}
+		m.splitPane.SetFocusedPane(ui.FocusTerminal)
+		m.state = stateInlineAttach
+		m.menu.SetState(ui.StateInlineAttach)
+		return m, tea.WindowSize()
 	case keys.KeyWorkspace:
 		registry, err := config.LoadWorkspaceRegistry()
 		if err != nil || len(registry.Workspaces) == 0 {
@@ -1159,7 +1184,31 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		m.state = stateQuickInteract
-		m.quickInputBar = ui.NewQuickInputBar()
+		m.quickInputBar = ui.NewQuickInputBar(ui.QuickInputTargetFocused)
+		m.menu.SetState(ui.StateQuickInteract)
+		return m, tea.WindowSize()
+	case keys.KeyQuickInputAgent:
+		selected := m.list.GetSelectedInstance()
+		if selected == nil || selected.Paused() || !selected.TmuxAlive() || selected.Status == session.Loading {
+			return m, nil
+		}
+		if m.splitPane.IsDiffVisible() {
+			return m, nil
+		}
+		m.state = stateQuickInteract
+		m.quickInputBar = ui.NewQuickInputBar(ui.QuickInputTargetAgent)
+		m.menu.SetState(ui.StateQuickInteract)
+		return m, tea.WindowSize()
+	case keys.KeyQuickInputTerminal:
+		selected := m.list.GetSelectedInstance()
+		if selected == nil || selected.Paused() || !selected.TmuxAlive() || selected.Status == session.Loading {
+			return m, nil
+		}
+		if m.splitPane.IsDiffVisible() {
+			return m, nil
+		}
+		m.state = stateQuickInteract
+		m.quickInputBar = ui.NewQuickInputBar(ui.QuickInputTargetTerminal)
 		m.menu.SetState(ui.StateQuickInteract)
 		return m, tea.WindowSize()
 	case keys.KeyFullScreenAttach:
@@ -1631,7 +1680,7 @@ func (m *home) View() string {
 		// Quick input is 2 lines, replaces both status line and error box so panes don't shift.
 		sections = append(sections, listAndPreview, m.quickInputBar.View())
 	} else if m.state == stateInlineAttach {
-		hint := inlineAttachHintStyle.Render("▶ CAPTURING INPUT  ·  Esc to detach  ·  O for fullscreen")
+		hint := inlineAttachHintStyle.Render("▶ CAPTURING INPUT  ·  ctrl+q to detach  ·  O for fullscreen")
 		sections = append(sections, listAndPreview, hint, m.errBox.String())
 	} else {
 		statusLine := statusLineStyle.Render("? help · q quit")
