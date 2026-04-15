@@ -55,6 +55,11 @@ func RunDaemon(cfg *config.Config, configDir string) error {
 			// instances created or deleted by the main app since the
 			// last poll (DAEMON-03). On error keep using the previous
 			// list to stay resilient to transient I/O.
+			//
+			// NOTE: FromInstanceData calls Start(false) on non-paused
+			// instances which spawns a fresh tmux attach PTY each tick.
+			// That is the DAEMON-05 followup; addressing it here is
+			// out of scope for Phase 4.
 			if fresh, err := reloadInstances(configDir); err != nil {
 				if everyN.ShouldLog() {
 					log.WarningLog.Printf("daemon reload failed: %v", err)
@@ -94,7 +99,8 @@ func RunDaemon(cfg *config.Config, configDir string) error {
 		}
 	}()
 
-	// Notify on SIGINT (Ctrl+C) and SIGTERM. Save instances before
+	// Notify on SIGINT (Ctrl+C) and SIGTERM so we can drain the poll
+	// goroutine before exiting.
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigChan
