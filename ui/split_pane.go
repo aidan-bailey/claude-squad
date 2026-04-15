@@ -21,16 +21,16 @@ const (
 
 var (
 	splitPaneBorder = lipgloss.NewStyle().
-		BorderForeground(highlightColor).
-		Border(lipgloss.NormalBorder(), false, true, true, true)
+			BorderForeground(highlightColor).
+			Border(lipgloss.NormalBorder(), false, true, true, true)
 	separatorStyle = lipgloss.NewStyle().
-		Foreground(highlightColor)
+			Foreground(highlightColor)
 	focusedSeparatorStyle = lipgloss.NewStyle().
-		Foreground(highlightColor).
-		Bold(true)
+				Foreground(highlightColor).
+				Bold(true)
 	diffOverlayTitleStyle = lipgloss.NewStyle().
-		Foreground(highlightColor).
-		Bold(true)
+				Foreground(highlightColor).
+				Bold(true)
 )
 
 // SplitPane displays agent (preview) and terminal panes stacked vertically,

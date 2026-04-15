@@ -438,10 +438,10 @@ func TestMultipleConfirmationsDontInterfere(t *testing.T) {
 func TestScrollDoesNotTriggerInstanceChanged(t *testing.T) {
 	s := spinner.New(spinner.WithSpinner(spinner.MiniDot))
 	m := &home{
-		ctx:          context.Background(),
-		state:        stateDefault,
-		appConfig:    config.DefaultConfig(),
-		list:         ui.NewList(&s, false),
+		ctx:       context.Background(),
+		state:     stateDefault,
+		appConfig: config.DefaultConfig(),
+		list:      ui.NewList(&s, false),
 		splitPane: ui.NewSplitPane(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
 		menu:      ui.NewMenu(),
 	}

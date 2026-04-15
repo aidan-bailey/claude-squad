@@ -179,20 +179,20 @@ func newHome(ctx context.Context, wsCtx *config.WorkspaceContext, registry *conf
 	}
 
 	h := &home{
-		ctx:          ctx,
-		activeCtx:    wsCtx,
-		registry:     registry,
-		spinner:      spinner.New(spinner.WithSpinner(spinner.MiniDot)),
-		menu:         ui.NewMenu(),
+		ctx:       ctx,
+		activeCtx: wsCtx,
+		registry:  registry,
+		spinner:   spinner.New(spinner.WithSpinner(spinner.MiniDot)),
+		menu:      ui.NewMenu(),
 		splitPane: ui.NewSplitPane(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
 		errBox:    ui.NewErrBox(),
-		storage:      storage,
-		appConfig:    appConfig,
-		program:      program,
-		autoYes:      autoYes,
-		state:        stateDefault,
-		appState:     appState,
-		tabBar:       ui.NewWorkspaceTabBar(),
+		storage:   storage,
+		appConfig: appConfig,
+		program:   program,
+		autoYes:   autoYes,
+		state:     stateDefault,
+		appState:  appState,
+		tabBar:    ui.NewWorkspaceTabBar(),
 	}
 	h.list = ui.NewList(&h.spinner, autoYes)
 	if wsCtx != nil && wsCtx.Name != "" {
