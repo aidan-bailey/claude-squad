@@ -105,7 +105,7 @@ func (c *Config) GetProfiles() []Profile {
 func DefaultConfig() *Config {
 	program, err := GetClaudeCommand()
 	if err != nil {
-		log.ErrorLog.Printf("failed to get claude command: %v", err)
+		log.Errorf("failed to get claude command: %v", err)
 		program = defaultProgram
 	}
 
@@ -116,7 +116,7 @@ func DefaultConfig() *Config {
 		BranchPrefix: func() string {
 			user, err := user.Current()
 			if err != nil || user == nil || user.Username == "" {
-				log.ErrorLog.Printf("failed to get current user: %v", err)
+				log.Errorf("failed to get current user: %v", err)
 				return "session/"
 			}
 			return fmt.Sprintf("%s/", strings.ToLower(user.Username))
@@ -249,6 +249,7 @@ func LoadConfigFrom(dir string) *Config {
 	}
 	var cfg Config
 	if err := json.Unmarshal(data, &cfg); err != nil {
+		log.Warnf("corrupt config file, using defaults: %v", err)
 		cfg := DefaultConfig()
 		cfg.configDir = dir
 		return cfg

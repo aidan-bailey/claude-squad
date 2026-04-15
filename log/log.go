@@ -14,22 +14,38 @@ var (
 	ErrorLog   *log.Logger
 )
 
-var logFileName = filepath.Join(os.TempDir(), "claudesquad.log")
+const (
+	logFileName = "claudesquad.log"
+	maxLogSize  = 5 * 1024 * 1024 // 5 MB
+)
 
-var globalLogFile *os.File
+var (
+	logFilePath   string
+	globalLogFile *os.File
+)
 
 // Initialize should be called once at the beginning of the program to set up logging.
-// defer Close() after calling this function. It sets the go log output to the file in
-// the os temp directory.
+// defer Close() after calling this function.
+//
+// logDir specifies the directory for the log file. If empty, os.TempDir() is used.
+// When non-empty, the directory is created if it does not exist.
+func Initialize(logDir string, daemon bool) {
+	if logDir == "" {
+		logDir = os.TempDir()
+	} else {
+		if err := os.MkdirAll(logDir, 0755); err != nil {
+			// Fall back to temp dir if we can't create the log directory.
+			logDir = os.TempDir()
+		}
+	}
 
-func Initialize(daemon bool) {
-	f, err := os.OpenFile(logFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	logFilePath = filepath.Join(logDir, logFileName)
+	rotateIfNeeded(logFilePath)
+
+	f, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		panic(fmt.Sprintf("could not open log file: %s", err))
 	}
-
-	// Set log format to include timestamp and file/line number
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	fmtS := "%s"
 	if daemon {
@@ -42,10 +58,43 @@ func Initialize(daemon bool) {
 	globalLogFile = f
 }
 
+// Close closes the log file.
 func Close() {
-	_ = globalLogFile.Close()
-	// TODO: maybe only print if verbose flag is set?
-	fmt.Println("wrote logs to " + logFileName)
+	if globalLogFile != nil {
+		_ = globalLogFile.Close()
+	}
+}
+
+// Infof logs at INFO level. No-op if Initialize has not been called.
+func Infof(format string, v ...any) {
+	if InfoLog != nil {
+		InfoLog.Printf(format, v...)
+	}
+}
+
+// Warnf logs at WARNING level. No-op if Initialize has not been called.
+func Warnf(format string, v ...any) {
+	if WarningLog != nil {
+		WarningLog.Printf(format, v...)
+	}
+}
+
+// Errorf logs at ERROR level. No-op if Initialize has not been called.
+func Errorf(format string, v ...any) {
+	if ErrorLog != nil {
+		ErrorLog.Printf(format, v...)
+	}
+}
+
+// rotateIfNeeded renames the log file to .log.1 if it exceeds maxLogSize.
+func rotateIfNeeded(path string) {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() < maxLogSize {
+		return
+	}
+	backup := path + ".1"
+	_ = os.Remove(backup)
+	_ = os.Rename(path, backup)
 }
 
 // Every is used to log at most once every timeout duration.
