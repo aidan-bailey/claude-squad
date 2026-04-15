@@ -487,3 +487,131 @@ func TestConfirmationModalVisualAppearance(t *testing.T) {
 	// Test that the danger indicator is preserved
 	assert.Contains(t, rendered, "[!")
 }
+
+// TestKillSetsStatusToDeletingImmediately verifies that confirming a kill
+// sets the instance status to Deleting before the async cleanup Cmd runs.
+func TestKillSetsStatusToDeletingImmediately(t *testing.T) {
+	s := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	list := ui.NewList(&s, false)
+
+	instance, err := session.NewInstance(session.InstanceOptions{
+		Title:   "test-delete",
+		Path:    t.TempDir(),
+		Program: "claude",
+	})
+	require.NoError(t, err)
+	instance.SetStatus(session.Running)
+	_ = list.AddInstance(instance)
+	list.SetSelectedInstance(0)
+
+	h := &home{
+		ctx:       context.Background(),
+		state:     stateDefault,
+		appConfig: config.DefaultConfig(),
+		list:      list,
+		menu:      ui.NewMenu(),
+		splitPane: ui.NewSplitPane(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
+	}
+
+	// Set up a preAction like the kill handler does
+	h.pendingPreAction = func() {
+		instance.SetStatus(session.Deleting)
+	}
+	h.confirmAction("[!] Kill session 'test-delete'?", func() tea.Msg {
+		return killInstanceMsg{title: "test-delete"}
+	})
+
+	// Simulate confirming (pressing 'y')
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")}
+	_, _ = h.handleKeyPress(keyMsg)
+
+	// preAction should have run — status should be Deleting
+	assert.Equal(t, session.Deleting, instance.Status)
+}
+
+// TestKillFailedMsgRevertsStatus verifies that a killFailedMsg reverts the
+// instance status to its previous value.
+func TestKillFailedMsgRevertsStatus(t *testing.T) {
+	s := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	list := ui.NewList(&s, false)
+
+	instance, err := session.NewInstance(session.InstanceOptions{
+		Title:   "test-revert",
+		Path:    t.TempDir(),
+		Program: "claude",
+	})
+	require.NoError(t, err)
+	instance.SetStatus(session.Deleting)
+	_ = list.AddInstance(instance)
+
+	h := &home{
+		ctx:       context.Background(),
+		state:     stateDefault,
+		appConfig: config.DefaultConfig(),
+		list:      list,
+		menu:      ui.NewMenu(),
+		splitPane: ui.NewSplitPane(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
+		errBox:    ui.NewErrBox(),
+	}
+
+	// Process killFailedMsg
+	msg := killFailedMsg{
+		title:          "test-revert",
+		previousStatus: session.Running,
+		err:            fmt.Errorf("branch is checked out"),
+	}
+	h.Update(msg)
+
+	assert.Equal(t, session.Running, instance.Status)
+}
+
+// TestPersistableInstancesFiltersDeleting verifies that persistableInstances
+// excludes instances with Deleting status.
+func TestPersistableInstancesFiltersDeleting(t *testing.T) {
+	running, _ := session.NewInstance(session.InstanceOptions{
+		Title: "running", Path: t.TempDir(), Program: "claude",
+	})
+	running.SetStatus(session.Running)
+
+	deleting, _ := session.NewInstance(session.InstanceOptions{
+		Title: "deleting", Path: t.TempDir(), Program: "claude",
+	})
+	deleting.SetStatus(session.Deleting)
+
+	paused, _ := session.NewInstance(session.InstanceOptions{
+		Title: "paused", Path: t.TempDir(), Program: "claude",
+	})
+	paused.SetStatus(session.Paused)
+
+	result := persistableInstances([]*session.Instance{running, deleting, paused})
+	assert.Len(t, result, 2)
+	assert.Equal(t, "running", result[0].Title)
+	assert.Equal(t, "paused", result[1].Title)
+}
+
+// TestPreActionClearedOnCancel verifies that cancelling a confirmation
+// clears the pendingPreAction so it doesn't leak to the next confirmation.
+func TestPreActionClearedOnCancel(t *testing.T) {
+	s := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	list := ui.NewList(&s, false)
+
+	h := &home{
+		ctx:       context.Background(),
+		state:     stateDefault,
+		appConfig: config.DefaultConfig(),
+		list:      list,
+		menu:      ui.NewMenu(),
+		splitPane: ui.NewSplitPane(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
+	}
+
+	called := false
+	h.pendingPreAction = func() { called = true }
+	h.confirmAction("Test?", func() tea.Msg { return nil })
+
+	// Cancel with 'n'
+	keyMsg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")}
+	_, _ = h.handleKeyPress(keyMsg)
+
+	assert.False(t, called, "preAction should not have been called on cancel")
+	assert.Nil(t, h.pendingPreAction, "pendingPreAction should be nil after cancel")
+}
