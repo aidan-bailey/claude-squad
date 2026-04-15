@@ -12,14 +12,20 @@ import (
 
 // monitorWindowSize monitors and handles window resize events while attached.
 func (t *TmuxSession) monitorWindowSize() {
+	everyN := log.NewEvery(60 * time.Second)
+
 	// Use the current terminal height and width.
 	doUpdate := func() {
 		cols, rows, err := term.GetSize(int(os.Stdin.Fd()))
 		if err != nil {
-			log.ErrorLog.Printf("failed to update window size: %v", err)
+			if everyN.ShouldLog() {
+				log.ErrorLog.Printf("failed to update window size: %v", err)
+			}
 		} else {
 			if err := t.updateWindowSize(cols, rows); err != nil {
-				log.ErrorLog.Printf("failed to update window size: %v", err)
+				if everyN.ShouldLog() {
+					log.ErrorLog.Printf("failed to update window size: %v", err)
+				}
 			}
 		}
 	}

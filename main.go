@@ -31,13 +31,19 @@ var (
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			log.Initialize(daemonFlag)
+			configDir, err := config.GetConfigDir()
+			if err != nil {
+				configDir = os.TempDir()
+			}
+			log.Initialize(filepath.Join(configDir, "logs"), daemonFlag)
 			defer log.Close()
 
 			if daemonFlag {
 				cfg := config.LoadConfigFrom(configDirFlag)
 				err := daemon.RunDaemon(cfg, configDirFlag)
-				log.ErrorLog.Printf("failed to start daemon %v", err)
+				if err != nil {
+					log.ErrorLog.Printf("failed to start daemon: %v", err)
+				}
 				return err
 			}
 
@@ -147,7 +153,11 @@ var (
 		Use:   "reset",
 		Short: "Reset all stored instances",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			log.Initialize(false)
+			configDir, err := config.GetConfigDir()
+			if err != nil {
+				configDir = os.TempDir()
+			}
+			log.Initialize(filepath.Join(configDir, "logs"), false)
 			defer log.Close()
 
 			state := config.LoadState()
@@ -184,15 +194,14 @@ var (
 		Use:   "debug",
 		Short: "Print debug information like config paths",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			log.Initialize(false)
+			configDir, err := config.GetConfigDir()
+			if err != nil {
+				configDir = os.TempDir()
+			}
+			log.Initialize(filepath.Join(configDir, "logs"), false)
 			defer log.Close()
 
 			cfg := config.LoadConfig()
-
-			configDir, err := config.GetConfigDir()
-			if err != nil {
-				return fmt.Errorf("failed to get config directory: %w", err)
-			}
 			configJson, _ := json.MarshalIndent(cfg, "", "  ")
 
 			fmt.Printf("Config: %s\n%s\n", filepath.Join(configDir, config.ConfigFileName), configJson)

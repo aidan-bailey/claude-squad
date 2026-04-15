@@ -136,6 +136,7 @@ func LoadStateFrom(dir string) *State {
 
 	var state State
 	if err := json.Unmarshal(data, &state); err != nil {
+		log.Warnf("corrupt state file, using defaults: %v", err)
 		s := DefaultState()
 		s.configDir = dir
 		return s

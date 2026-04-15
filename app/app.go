@@ -1162,7 +1162,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, tea.WindowSize()
 	case keys.KeyWorkspace:
 		registry, err := config.LoadWorkspaceRegistry()
-		if err != nil || len(registry.Workspaces) == 0 {
+		if err != nil {
+			return m, m.handleError(fmt.Errorf("failed to load workspace registry: %w", err))
+		}
+		if len(registry.Workspaces) == 0 {
 			return m, m.handleError(fmt.Errorf("no workspaces registered"))
 		}
 		activeNames := make(map[string]bool, len(m.slots))
