@@ -64,3 +64,19 @@ func TestInstance_KillIsIdempotent(t *testing.T) {
 	assert.False(t, inst.isStarted(), "Kill should clear the started flag")
 	assert.Nil(t, inst.getTmuxSession(), "Kill should nil out the tmux session")
 }
+
+// TestInstance_StartIsIdempotent verifies Start is a no-op on an
+// already-started instance (INST-04). A second Start must not replace
+// the tmux session and orphan the first.
+func TestInstance_StartIsIdempotent(t *testing.T) {
+	inst := newTestStartedInstance(t) // already started once
+
+	// Capture current tmuxSession pointer.
+	firstSession := inst.getTmuxSession()
+	assert.NotNil(t, firstSession)
+
+	// Second Start should not create a new tmux session.
+	assert.NoError(t, inst.Start(true))
+	assert.Same(t, firstSession, inst.getTmuxSession(),
+		"Start should not replace the tmux session if already started")
+}

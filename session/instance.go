@@ -319,6 +319,15 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 		return fmt.Errorf("instance title cannot be empty")
 	}
 
+	// Idempotency guard: a second Start on an already-started instance is
+	// a no-op so we don't orphan the existing tmux session (INST-04).
+	i.mu.Lock()
+	if i.started {
+		i.mu.Unlock()
+		return nil
+	}
+	i.mu.Unlock()
+
 	ts := i.getTmuxSession()
 	if ts == nil {
 		// Create new tmux session
