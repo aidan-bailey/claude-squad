@@ -42,7 +42,7 @@ func TestInstance_ConcurrentDiffStats(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 1000; i++ {
-			inst.setDiffStatsForTest(&git.DiffStats{Added: i, Removed: i})
+			inst.setDiffStats(&git.DiffStats{Added: i, Removed: i})
 		}
 	}()
 	go func() {
