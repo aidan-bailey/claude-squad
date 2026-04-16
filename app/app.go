@@ -230,6 +230,18 @@ func newHome(ctx context.Context, wsCtx *config.WorkspaceContext, registry *conf
 		}
 	}
 
+	// Restart crash-recovered instances
+	for _, inst := range h.list.GetInstances() {
+		if !inst.CrashRecovered {
+			continue
+		}
+		if err := inst.CrashRestart(); err != nil {
+			log.ErrorLog.Printf("crash-recovery restart for %q failed: %v", inst.Title, err)
+			inst.SetStatus(session.Paused)
+		}
+		inst.CrashRecovered = false
+	}
+
 	// Clean up orphaned tmux sessions from previous crashes
 	claimedTitles := make(map[string]bool)
 	for _, inst := range h.list.GetInstances() {

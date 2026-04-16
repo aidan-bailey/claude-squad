@@ -729,6 +729,34 @@ func (i *Instance) Resume() error {
 	return nil
 }
 
+// CrashRestart starts a new tmux session for a crash-recovered instance.
+// The worktree already exists (for regular instances) or is unnecessary
+// (for workspace terminals). The program is modified with --continue for
+// supported agents.
+func (i *Instance) CrashRestart() error {
+	program := BuildRecoveryCommand(i.Program)
+	ts := tmux.NewTmuxSession(i.Title, program)
+	i.setTmuxSession(ts)
+
+	var workDir string
+	if i.IsWorkspaceTerminal {
+		workDir = i.Path
+	} else {
+		gw := i.getGitWorktree()
+		if gw == nil {
+			return fmt.Errorf("no git worktree for crash restart of %q", i.Title)
+		}
+		workDir = gw.GetWorktreePath()
+	}
+
+	if err := ts.Start(workDir); err != nil {
+		return fmt.Errorf("crash restart failed for %q: %w", i.Title, err)
+	}
+
+	i.SetStatus(Running)
+	return nil
+}
+
 // UpdateDiffStats updates the git diff statistics for this instance
 func (i *Instance) UpdateDiffStats() error {
 	if !i.isStarted() {
