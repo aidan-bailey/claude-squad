@@ -1,6 +1,9 @@
 package session
 
-import "strings"
+import (
+	"path/filepath"
+	"strings"
+)
 
 // BuildRecoveryCommand modifies a program command string for crash recovery.
 // For supported agents (claude), it appends resume flags (--continue).
@@ -13,8 +16,10 @@ func BuildRecoveryCommand(program string) string {
 
 	base := parts[0]
 
-	// Only modify claude commands
-	if base != "claude" {
+	// Match by basename so absolute paths like /etc/profiles/.../bin/claude
+	// (set when the instance was created from config.Program) are still treated
+	// as claude. "claudette" and similar are preserved as non-matches.
+	if filepath.Base(base) != "claude" {
 		return program
 	}
 

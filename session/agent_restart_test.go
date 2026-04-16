@@ -34,3 +34,24 @@ func TestBuildRecoveryCommand_ClaudeSubstring(t *testing.T) {
 	// "claudette" should NOT match
 	assert.Equal(t, "claudette", BuildRecoveryCommand("claudette"))
 }
+
+func TestBuildRecoveryCommand_ClaudeAbsolutePath(t *testing.T) {
+	// Config.Program often stores the absolute path (e.g. from `which claude`).
+	// The basename must still match and --continue must be appended.
+	assert.Equal(t,
+		"/etc/profiles/per-user/aidanb/bin/claude --continue",
+		BuildRecoveryCommand("/etc/profiles/per-user/aidanb/bin/claude"),
+	)
+}
+
+func TestBuildRecoveryCommand_ClaudeAbsolutePathWithFlags(t *testing.T) {
+	assert.Equal(t,
+		"/usr/bin/claude --continue --model sonnet",
+		BuildRecoveryCommand("/usr/bin/claude --model sonnet"),
+	)
+}
+
+func TestBuildRecoveryCommand_ClaudettePath(t *testing.T) {
+	// Basename "claudette" must not match even at an absolute path.
+	assert.Equal(t, "/usr/bin/claudette", BuildRecoveryCommand("/usr/bin/claudette"))
+}
