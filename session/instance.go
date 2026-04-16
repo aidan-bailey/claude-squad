@@ -641,10 +641,14 @@ func (i *Instance) Pause(saveState func() error) error {
 		}
 	}
 
-	// Detach from tmux session instead of closing to preserve session output
-	if err := ts.DetachSafely(); err != nil {
-		errs = append(errs, fmt.Errorf("failed to detach tmux session: %w", err))
-		// Continue with pause process even if detach fails
+	// Kill the tmux session so the agent process actually stops. DetachSafely
+	// is a no-op outside full-screen attach, which would leave claude/aider
+	// running inside a session whose worktree we are about to delete. Resume
+	// rebuilds the session with BuildRecoveryCommand so --continue (or equivalent)
+	// restores the conversation for agents that support it.
+	if err := ts.Close(); err != nil {
+		log.WarningLog.Printf("close tmux session during pause: %v", err)
+		// Continue with pause process; the tmux session may already be dead.
 	}
 
 	// Check if worktree exists before trying to remove it
@@ -716,23 +720,13 @@ func (i *Instance) Resume(saveState func() error) error {
 			if closeErr := ts.Close(); closeErr != nil {
 				log.ErrorLog.Printf("failed to close broken session: %v", closeErr)
 			}
-			// Fall back to creating new session
-			if err := ts.Start(gw.GetWorktreePath()); err != nil {
-				// Cleanup git worktree if tmux session creation fails
-				if cleanupErr := gw.Cleanup(); cleanupErr != nil {
-					err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
-				}
-				return fmt.Errorf("failed to start new session: %w", err)
+			if err := i.startFreshWithRecovery(gw); err != nil {
+				return err
 			}
 		}
 	} else {
-		// Create new tmux session
-		if err := ts.Start(gw.GetWorktreePath()); err != nil {
-			// Cleanup git worktree if tmux session creation fails
-			if cleanupErr := gw.Cleanup(); cleanupErr != nil {
-				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
-			}
-			return fmt.Errorf("failed to start new session: %w", err)
+		if err := i.startFreshWithRecovery(gw); err != nil {
+			return err
 		}
 	}
 
@@ -745,6 +739,23 @@ func (i *Instance) Resume(saveState func() error) error {
 	return nil
 }
 
+// startFreshWithRecovery creates a brand-new tmux session for an instance
+// whose previous session no longer exists (normal after crash or kill-server).
+// The program is rewritten via BuildRecoveryCommand so supported agents resume
+// their prior conversation (e.g. `claude --continue`).
+func (i *Instance) startFreshWithRecovery(gw *git.GitWorktree) error {
+	program := BuildRecoveryCommand(i.Program)
+	ts := tmux.NewTmuxSession(i.Title, program)
+	if err := ts.Start(gw.GetWorktreePath()); err != nil {
+		if cleanupErr := gw.Cleanup(); cleanupErr != nil {
+			err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+		}
+		return fmt.Errorf("failed to start new session: %w", err)
+	}
+	i.setTmuxSession(ts)
+	return nil
+}
+
 // CrashRestart starts a new tmux session for a crash-recovered instance.
 // The worktree already exists (for regular instances) or is unnecessary
 // (for workspace terminals). The program is modified with --continue for
@@ -752,7 +763,6 @@ func (i *Instance) Resume(saveState func() error) error {
 func (i *Instance) CrashRestart() error {
 	program := BuildRecoveryCommand(i.Program)
 	ts := tmux.NewTmuxSession(i.Title, program)
-	i.setTmuxSession(ts)
 
 	var workDir string
 	if i.IsWorkspaceTerminal {
@@ -769,6 +779,11 @@ func (i *Instance) CrashRestart() error {
 		return fmt.Errorf("crash restart failed for %q: %w", i.Title, err)
 	}
 
+	// Only replace the tmux session after Start succeeds. Otherwise a failed
+	// CrashRestart would leave i.tmuxSession pointing at a session whose
+	// program string carries --continue, and a later Resume would start that
+	// modified program on a fresh conversation.
+	i.setTmuxSession(ts)
 	i.SetStatus(Running)
 	return nil
 }
