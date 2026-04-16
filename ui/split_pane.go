@@ -198,9 +198,11 @@ func (s *SplitPane) ResetTerminalToNormalMode() {
 	s.terminal.ResetToNormalMode()
 }
 
-// AttachTerminal attaches to the terminal tmux session.
-func (s *SplitPane) AttachTerminal() (chan struct{}, error) {
-	return s.terminal.Attach()
+// TerminalTmuxSession returns the live tmux session backing the currently
+// displayed terminal pane, or nil if none exists. Callers use this to drive a
+// full-screen attach via tea.ExecProcess.
+func (s *SplitPane) TerminalTmuxSession() *tmux.TmuxSession {
+	return s.terminal.CurrentTmuxSession()
 }
 
 // CleanupTerminal closes the terminal session.

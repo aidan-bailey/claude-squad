@@ -49,6 +49,17 @@ func TestSanitizeName(t *testing.T) {
 	require.Equal(t, TmuxPrefix+"asdf__asdf", session.sanitizedName)
 }
 
+// TestFullScreenAttachCmd verifies that the returned exec.Cmd is shaped so
+// tea.ExecProcess can hand the terminal to `tmux attach-session -t <name>`.
+func TestFullScreenAttachCmd(t *testing.T) {
+	session := NewTmuxSession("attach-shape", "program")
+	cmd := session.FullScreenAttachCmd()
+	require.Equal(t,
+		[]string{"tmux", "attach-session", "-t", TmuxPrefix + "attach-shape"},
+		cmd.Args,
+	)
+}
+
 func TestCaptureAndProcessCapturesOnce(t *testing.T) {
 	captureCount := 0
 	cmdExec := cmd_test.MockCmdExec{

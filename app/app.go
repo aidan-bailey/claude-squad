@@ -8,6 +8,7 @@ import (
 	"claude-squad/log"
 	"claude-squad/session"
 	"claude-squad/session/git"
+	"claude-squad/session/tmux"
 	"claude-squad/ui"
 	"claude-squad/ui/overlay"
 	"context"
@@ -147,6 +148,9 @@ type home struct {
 	pendingPreAction func()
 	// pendingDir is the directory path awaiting workspace registration confirmation
 	pendingDir string
+	// pendingAttachTarget is the instance whose tmux session should be
+	// full-screen-attached after the attach help overlay is dismissed.
+	pendingAttachTarget *session.Instance
 
 	// -- Workspace slots --
 
@@ -546,6 +550,47 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.handleError(msg.err), m.instanceChanged())
 		}
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
+	case startFullScreenAttachMsg:
+		// Resolve the tmux session for the requested pane.
+		var ts *tmux.TmuxSession
+		switch msg.target {
+		case attachTargetAgent:
+			ts = msg.instance.TmuxSession()
+		case attachTargetTerminal:
+			ts = m.splitPane.TerminalTmuxSession()
+		}
+		if ts == nil {
+			return m, m.handleError(fmt.Errorf("no tmux session available for attach"))
+		}
+		// Close the preview PTY so the foreground tmux attach owns the tty.
+		if err := ts.PausePreview(); err != nil {
+			return m, m.handleError(err)
+		}
+		inst := msg.instance
+		return m, tea.ExecProcess(ts.FullScreenAttachCmd(), func(err error) tea.Msg {
+			return attachDoneMsg{instance: inst, err: err}
+		})
+	case attachDoneMsg:
+		// tea.ExecProcess has restored the terminal. Rebuild the preview PTYs
+		// so live capture resumes. Errors here are logged — the next metadata
+		// tick will notice a dead session and mark the instance paused.
+		if ts := msg.instance.TmuxSession(); ts != nil {
+			if err := ts.ResumePreview(); err != nil {
+				log.ErrorLog.Printf("failed to resume preview for %q: %v", msg.instance.Title, err)
+			}
+		}
+		if ts := m.splitPane.TerminalTmuxSession(); ts != nil {
+			if err := ts.ResumePreview(); err != nil {
+				log.ErrorLog.Printf("failed to resume terminal preview for %q: %v", msg.instance.Title, err)
+			}
+		}
+		m.state = stateDefault
+		var cmds []tea.Cmd
+		if msg.err != nil {
+			cmds = append(cmds, m.handleError(msg.err))
+		}
+		cmds = append(cmds, tea.WindowSize(), m.instanceChanged())
+		return m, tea.Batch(cmds...)
 	case workspaceRegisteredMsg:
 		ws := m.registry.FindByPath(msg.dir)
 		if ws == nil {
@@ -1177,11 +1222,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 
 		// Show help screen before confirming pause
-		m.showHelpScreen(helpTypeInstanceCheckout{}, func() {
+		return m.showHelpScreen(helpTypeInstanceCheckout{}, func() tea.Cmd {
 			message := fmt.Sprintf("[!] Pause session '%s'?", selected.Title)
-			m.confirmAction(message, pauseAction)
+			return m.confirmAction(message, pauseAction)
 		})
-		return m, nil
 	case keys.KeyResume:
 		selected := m.list.GetSelectedInstance()
 		if selected == nil || selected.IsWorkspaceTerminal {
@@ -1311,16 +1355,12 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if s := selected.GetStatus(); s == session.Loading || s == session.Deleting {
 			return m, nil
 		}
-		m.showHelpScreen(helpTypeInstanceAttach{}, func() {
-			ch, err := m.list.Attach()
-			if err != nil {
-				m.handleError(err)
-				return
-			}
-			<-ch
-			m.state = stateDefault
+		// Show the help overlay (if unseen); when dismissed, fire the attach
+		// message. Running tea.ExecProcess from inside a dismiss closure would
+		// execute within Update; instead we return it as a Cmd to the runtime.
+		return m.showHelpScreen(helpTypeInstanceAttach{}, func() tea.Cmd {
+			return startAttachCmd(selected, attachTargetAgent)
 		})
-		return m, nil
 	case keys.KeyFullScreenAttachTerminal:
 		if m.list.NumInstances() == 0 {
 			return m, nil
@@ -1332,16 +1372,9 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if s := selected.GetStatus(); s == session.Loading || s == session.Deleting {
 			return m, nil
 		}
-		m.showHelpScreen(helpTypeInstanceAttach{}, func() {
-			ch, err := m.splitPane.AttachTerminal()
-			if err != nil {
-				m.handleError(err)
-				return
-			}
-			<-ch
-			m.state = stateDefault
+		return m.showHelpScreen(helpTypeInstanceAttach{}, func() tea.Cmd {
+			return startAttachCmd(selected, attachTargetTerminal)
 		})
-		return m, nil
 	default:
 		return m, nil
 	}
@@ -1433,6 +1466,31 @@ type resumeDoneMsg struct {
 	err            error
 }
 
+// fullScreenAttachTarget picks which tmux session (agent vs terminal) a
+// full-screen attach should target for the selected instance.
+type fullScreenAttachTarget int
+
+const (
+	attachTargetAgent fullScreenAttachTarget = iota
+	attachTargetTerminal
+)
+
+// startFullScreenAttachMsg dispatches the actual tea.ExecProcess after the
+// attach help overlay has been dismissed. We don't call tea.ExecProcess from
+// inside the help-dismiss closure because that would run inside Update and
+// we want the runtime to process the Cmd normally.
+type startFullScreenAttachMsg struct {
+	instance *session.Instance
+	target   fullScreenAttachTarget
+}
+
+// attachDoneMsg is returned by tea.ExecProcess when the foreground tmux
+// attach-session child exits (user hit C-q, or the session died).
+type attachDoneMsg struct {
+	instance *session.Instance
+	err      error
+}
+
 // backgroundKillCmd runs the blocking Kill() of a popped instance in a tea.Cmd
 // goroutine so the Bubble Tea update loop stays responsive. Used by the
 // "abort unstarted instance" paths (ctrl-c / Esc during new-instance entry,
@@ -1447,6 +1505,15 @@ func backgroundKillCmd(inst *session.Instance) tea.Cmd {
 			log.ErrorLog.Printf("background instance kill failed: %v", err)
 		}
 		return backgroundCleanupDoneMsg{}
+	}
+}
+
+// startAttachCmd returns a Cmd that emits startFullScreenAttachMsg so Update
+// can hand off to tea.ExecProcess. It exists as a helper because the same
+// payload is needed from both the "help skipped" and "help dismissed" paths.
+func startAttachCmd(inst *session.Instance, target fullScreenAttachTarget) tea.Cmd {
+	return func() tea.Msg {
+		return startFullScreenAttachMsg{instance: inst, target: target}
 	}
 }
 

@@ -134,8 +134,12 @@ var (
 	descStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF"))
 )
 
-// showHelpScreen displays the help screen overlay if it hasn't been shown before
-func (m *home) showHelpScreen(helpType helpText, onDismiss func()) (tea.Model, tea.Cmd) {
+// showHelpScreen displays the help screen overlay if it hasn't been shown before.
+// The onDismiss callback, if non-nil, is invoked when the overlay is closed (or
+// immediately when the overlay is skipped because the user has already seen it).
+// It may mutate model state (e.g. to open a follow-up modal) and return a tea.Cmd
+// to be dispatched once the help state has been cleared.
+func (m *home) showHelpScreen(helpType helpText, onDismiss func() tea.Cmd) (tea.Model, tea.Cmd) {
 	// Get the flag for this help type
 	var alwaysShow bool
 	switch helpType.(type) {
@@ -162,29 +166,34 @@ func (m *home) showHelpScreen(helpType helpText, onDismiss func()) (tea.Model, t
 		return m, nil
 	}
 
-	// Skip displaying the help screen
+	// Skip displaying the help screen — fire the dismiss Cmd inline.
+	var cmd tea.Cmd
 	if onDismiss != nil {
-		onDismiss()
+		cmd = onDismiss()
 	}
-	return m, nil
+	return m, cmd
 }
 
 // handleHelpState handles key events when in help state
 func (m *home) handleHelpState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Any key press will close the help overlay
-	shouldClose := m.textOverlay.HandleKeyPress(msg)
+	// Any key press will close the help overlay. HandleKeyPress invokes
+	// OnDismiss and returns its tea.Cmd (if any) alongside the close flag.
+	shouldClose, dismissCmd := m.textOverlay.HandleKeyPress(msg)
 	if shouldClose {
 		// Only reset to default if the OnDismiss callback didn't transition to
 		// another state (e.g. checkout's callback sets stateConfirm).
 		if m.state == stateHelp {
 			m.state = stateDefault
 		}
-		return m, tea.Sequence(
-			tea.WindowSize(),
-			func() tea.Msg {
-				m.menu.SetState(ui.StateDefault)
-				return nil
-			},
+		return m, tea.Batch(
+			dismissCmd,
+			tea.Sequence(
+				tea.WindowSize(),
+				func() tea.Msg {
+					m.menu.SetState(ui.StateDefault)
+					return nil
+				},
+			),
 		)
 	}
 

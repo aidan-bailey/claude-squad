@@ -547,11 +547,14 @@ func (i *Instance) TapEnter() {
 	}
 }
 
-func (i *Instance) Attach() (chan struct{}, error) {
+// TmuxSession returns the backing tmux session, or nil if the instance has
+// not been started yet. Exposed so the app layer can drive a full-screen
+// attach via tea.ExecProcess.
+func (i *Instance) TmuxSession() *tmux.TmuxSession {
 	if !i.isStarted() {
-		return nil, fmt.Errorf("cannot attach instance that has not been started")
+		return nil
 	}
-	return i.getTmuxSession().Attach()
+	return i.getTmuxSession()
 }
 
 func (i *Instance) SetPreviewSize(width, height int) error {
@@ -641,11 +644,11 @@ func (i *Instance) Pause(saveState func() error) error {
 		}
 	}
 
-	// Kill the tmux session so the agent process actually stops. DetachSafely
-	// is a no-op outside full-screen attach, which would leave claude/aider
-	// running inside a session whose worktree we are about to delete. Resume
-	// rebuilds the session with BuildRecoveryCommand so --continue (or equivalent)
-	// restores the conversation for agents that support it.
+	// Kill the tmux session so the agent process actually stops. Otherwise
+	// claude/aider would keep running inside a session whose worktree we are
+	// about to delete. Resume rebuilds the session with BuildRecoveryCommand
+	// so --continue (or equivalent) restores the conversation for agents
+	// that support it.
 	if err := ts.Close(); err != nil {
 		log.WarningLog.Printf("close tmux session during pause: %v", err)
 		// Continue with pause process; the tmux session may already be dead.

@@ -47,9 +47,11 @@ type TmuxSession struct {
 
 	// Initialized by Start or Restore
 	//
-	// ptmx is a PTY is running the tmux attach command. This can be resized to change the
-	// stdout dimensions of the tmux pane. On detach, we close it and set a new one.
-	// This should never be nil.
+	// ptmx is the detached-mode PTY attached to the tmux session. The UI drives
+	// preview rendering, resizing, and keystroke injection through it. Full-screen
+	// attach bypasses this PTY entirely via tea.ExecProcess, so ptmx is temporarily
+	// closed while the child tmux process owns the real tty (see PausePreview/
+	// ResumePreview). This should never be nil outside of those paused windows.
 	ptmx *os.File
 	// monitor monitors the tmux pane content and sends signals to the UI when it's status changes
 	monitor *statusMonitor
@@ -57,24 +59,9 @@ type TmuxSession struct {
 	// Output pump — continuously drains PTY output to prevent buffer deadlock.
 	// When nothing reads from ptmx, the tmux client blocks on stdout and stops
 	// processing stdin, which breaks SendKeysRaw (inline attach).
-	// pumpDest is io.Discard normally; Attach() switches it to os.Stdout.
 	pumpMu   sync.Mutex
 	pumpDest io.Writer
 	pumpDone chan struct{} // closed when the pump goroutine exits
-
-	// Initialized by Attach
-	// Deinitilaized by Detach
-	//
-	// Channel to be closed at the very end of detaching. Used to signal callers.
-	attachCh chan struct{}
-	// detachOnce ensures attachCh is closed exactly once, preventing panics when
-	// both the stdout goroutine (session death) and Detach() try to close it.
-	detachOnce *sync.Once
-	// While attached, we use some goroutines to manage the window size and stdin/stdout. This stuff
-	// is used to terminate them on Detach. We don't want them to outlive the attached window.
-	ctx    context.Context
-	cancel func()
-	wg     *sync.WaitGroup
 }
 
 const TmuxPrefix = "claudesquad_"
@@ -170,6 +157,17 @@ func (t *TmuxSession) Start(workDir string) error {
 		log.WarningLog.Printf("failed to enable mouse scrolling for session %s: %v", t.sanitizedName, err)
 	}
 	mouseCancel()
+
+	// Rebind Ctrl-Q to detach-client for full-screen attach. The default tmux
+	// prefix is Ctrl-B + d; our users expect Ctrl-Q because inline attach has
+	// always used it. This binding is server-wide, but claude-squad has always
+	// assumed ownership of Ctrl-Q as its detach key.
+	bindCtx, bindCancel := context.WithTimeout(context.Background(), tmuxTimeout)
+	bindCmd := exec.CommandContext(bindCtx, "tmux", "bind-key", "-n", "C-q", "detach-client")
+	if err := t.cmdExec.Run(bindCmd); err != nil {
+		log.WarningLog.Printf("failed to bind C-q to detach-client: %v", err)
+	}
+	bindCancel()
 
 	err = t.Restore()
 	if err != nil {
@@ -406,200 +404,38 @@ func (t *TmuxSession) GetContentHash() []byte {
 	return t.monitor.prevOutputHash
 }
 
-func (t *TmuxSession) Attach() (chan struct{}, error) {
-	t.attachCh = make(chan struct{})
-	t.detachOnce = &sync.Once{}
-
-	t.wg = &sync.WaitGroup{}
-	t.wg.Add(1)
-	t.ctx, t.cancel = context.WithCancel(context.Background())
-
-	// Redirect the output pump to stdout for fullscreen display.
-	// The pump goroutine (started in Restore) continuously reads from ptmx;
-	// switching pumpDest from io.Discard to os.Stdout makes the output visible.
-	t.setPumpDest(os.Stdout)
-
-	// Monitor the pump goroutine for abnormal exit (session death).
-	// This replaces the previous io.Copy goroutine.
-	go func() {
-		defer t.wg.Done()
-		<-t.pumpDone
-		// When the pump exits, the PTY was closed.
-		// Check if the context is done to determine if it was a normal detach.
-		select {
-		case <-t.ctx.Done():
-			// Normal detach, do nothing
-		default:
-			// Session terminated abnormally (e.g., Ctrl-D, program exit).
-			// Cancel goroutines and signal the caller so the app doesn't hang.
-			fmt.Fprintf(os.Stderr, "\n\033[31mError: Session terminated without detaching. Use Ctrl-Q to properly detach from tmux sessions.\033[0m\n")
-			if t.cancel != nil {
-				t.cancel()
-			}
-			t.detachOnce.Do(func() {
-				close(t.attachCh)
-			})
-		}
-	}()
-
-	go func() {
-		// Close the channel after 50ms
-		timeoutCh := make(chan struct{})
-		go func() {
-			time.Sleep(50 * time.Millisecond)
-			close(timeoutCh)
-		}()
-
-		// Read input from stdin and check for Ctrl+q
-		buf := make([]byte, 32)
-		for {
-			nr, err := os.Stdin.Read(buf)
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				continue
-			}
-
-			// Exit if context was cancelled (e.g., session died abnormally)
-			select {
-			case <-t.ctx.Done():
-				return
-			default:
-			}
-
-			// Nuke the first bytes of stdin, up to 64, to prevent tmux from reading it.
-			// When we attach, there tends to be terminal control sequences like ?[?62c0;95;0c or
-			// ]10;rgb:f8f8f8. The control sequences depend on the terminal (warp vs iterm). We should use regex ideally
-			// but this works well for now. Log this for debugging.
-			//
-			// There seems to always be control characters, but I think it's possible for there not to be. The heuristic
-			// here can be: if there's characters within 50ms, then assume they are control characters and nuke them.
-			select {
-			case <-timeoutCh:
-			default:
-				log.InfoLog.Printf("nuked first stdin: %s", buf[:nr])
-				continue
-			}
-
-			// Check for Ctrl+q (ASCII 17)
-			if nr == 1 && buf[0] == 17 {
-				// Detach from the session
-				t.Detach()
-				return
-			}
-
-			// Forward other input to tmux
-			_, _ = t.ptmx.Write(buf[:nr])
-		}
-	}()
-
-	t.monitorWindowSize()
-	return t.attachCh, nil
+// FullScreenAttachCmd returns a command that attaches to this tmux session in
+// the foreground. It's intended to be handed to tea.ExecProcess, which
+// releases and restores the terminal around the call so the child tmux
+// owns the real tty for the duration of the attach. Detach is driven by
+// the C-q key binding installed during Start (see bind-key call).
+func (t *TmuxSession) FullScreenAttachCmd() *exec.Cmd {
+	return exec.Command("tmux", "attach-session", "-t", t.sanitizedName)
 }
 
-// DetachSafely disconnects from the current tmux session without panicking
-func (t *TmuxSession) DetachSafely() error {
-	// Only detach if we're actually attached
-	if t.attachCh == nil {
-		return nil // Already detached
-	}
-
-	var errs []error
-
-	// Switch pump back to discard.
-	t.setPumpDest(io.Discard)
-
-	// Close the attached pty session.
+// PausePreview closes the detached preview PTY and waits for its pump to
+// exit. Call this immediately before tea.ExecProcess hands the tty to a
+// foreground `tmux attach-session`, so there are no stray readers on the
+// session during the attach. ResumePreview re-opens the PTY afterwards.
+func (t *TmuxSession) PausePreview() error {
 	if t.ptmx != nil {
 		if err := t.ptmx.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("error closing attach pty session: %w", err))
+			return fmt.Errorf("error closing preview PTY: %w", err)
 		}
 		t.ptmx = nil
 	}
-
-	// Wait for pump goroutine to exit.
 	if t.pumpDone != nil {
 		<-t.pumpDone
-	}
-
-	// Clean up attach state
-	if t.detachOnce != nil {
-		t.detachOnce.Do(func() {
-			close(t.attachCh)
-		})
-	} else if t.attachCh != nil {
-		close(t.attachCh)
-	}
-	t.attachCh = nil
-
-	if t.cancel != nil {
-		t.cancel()
-		t.cancel = nil
-	}
-
-	if t.wg != nil {
-		t.wg.Wait()
-		t.wg = nil
-	}
-
-	t.ctx = nil
-
-	if len(errs) > 0 {
-		return fmt.Errorf("errors during detach: %v", errs)
+		t.pumpDone = nil
 	}
 	return nil
 }
 
-// Detach disconnects from the current tmux session. If the PTY close or
-// restore fails (e.g., because the tmux session died), it logs the error
-// and degrades gracefully instead of crashing the application.
-func (t *TmuxSession) Detach() {
-	defer func() {
-		t.detachOnce.Do(func() {
-			close(t.attachCh)
-		})
-		t.attachCh = nil
-		t.cancel = nil
-		t.ctx = nil
-		t.wg = nil
-	}()
-
-	// Switch pump back to discard before closing the PTY.
-	t.setPumpDest(io.Discard)
-
-	// Close the attached pty session. This causes the pump goroutine to exit.
-	if t.ptmx != nil {
-		if err := t.ptmx.Close(); err != nil {
-			log.ErrorLog.Printf("error closing attach pty session (session may have died): %v", err)
-		}
-		t.ptmx = nil
-	}
-
-	// Wait for the pump goroutine to exit before restoring.
-	if t.pumpDone != nil {
-		<-t.pumpDone
-	}
-
-	// Restore creates a new ptmx and starts a new pump (draining to discard).
-	// Only restore if the session still exists. If the session died (e.g.,
-	// program exited, Ctrl-D), skip restore — the next metadata tick will
-	// detect the death and mark the instance as paused.
-	if t.DoesSessionExist() {
-		if err := t.Restore(); err != nil {
-			log.ErrorLog.Printf("error restoring session after detach (session may have died): %v", err)
-			// ptmx remains nil; the metadata tick will detect the dead
-			// session and mark it as paused.
-		}
-	}
-
-	// Cancel goroutines created by Attach.
-	if t.cancel != nil {
-		t.cancel()
-	}
-	if t.wg != nil {
-		t.wg.Wait()
-	}
+// ResumePreview reopens the detached preview PTY after a full-screen attach
+// returns control. It is a thin wrapper around Restore kept as a named method
+// for clarity at the call sites in app.Update.
+func (t *TmuxSession) ResumePreview() error {
+	return t.Restore()
 }
 
 // Close terminates the tmux session and cleans up resources
