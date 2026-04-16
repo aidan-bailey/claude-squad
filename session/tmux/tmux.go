@@ -634,8 +634,12 @@ func (t *TmuxSession) DoesSessionExist() bool {
 
 // CapturePaneContent captures the content of the tmux pane
 func (t *TmuxSession) CapturePaneContent() (string, error) {
-	// Add -e flag to preserve escape sequences (ANSI color codes)
-	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-t", t.sanitizedName)
+	// Add -e flag to preserve escape sequences (ANSI color codes).
+	// Note: -J (join wrapped lines) is intentionally omitted so that tmux returns physical
+	// screen rows (each bounded by the pane width). Using -J would join wrapped segments into
+	// one long logical line; when lipgloss later renders those lines at the same width they
+	// re-wrap and produce extra visual rows, causing the pane to overflow its height.
+	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-t", t.sanitizedName)
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
 		return "", fmt.Errorf("error capturing pane content: %v", err)

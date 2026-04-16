@@ -55,9 +55,15 @@ func (t *TerminalPane) SetSize(width, height int) {
 	t.height = height
 	t.viewport.Width = width
 	t.viewport.Height = height
-	if s, ok := t.sessions[t.currentTitle]; ok && s.tmuxSession != nil {
+	// Resize all cached sessions so that no session has a stale width. A stale
+	// width causes captured lines to be wider than width, which re-wraps when
+	// rendered and overflows the pane's height constraint.
+	for title, s := range t.sessions {
+		if s.tmuxSession == nil {
+			continue
+		}
 		if err := s.tmuxSession.SetDetachedSize(width, height); err != nil {
-			log.InfoLog.Printf("terminal pane: failed to set detached size: %v", err)
+			log.InfoLog.Printf("terminal pane: failed to set detached size for %s: %v", title, err)
 		}
 	}
 }
