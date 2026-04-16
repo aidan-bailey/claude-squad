@@ -77,6 +77,7 @@ func ReconcileAndRestore(data InstanceData, configDir string, cmdExec cmd.Execut
 	tmuxAlive := CheckTmuxAlive(data.Title, cmdExec)
 	wtExists := CheckWorktreeExists(data.Worktree.WorktreePath)
 	action := DetermineRecoveryAction(data.Status, tmuxAlive, wtExists, data.IsWorkspaceTerminal)
+	logRecoveryAction(data.Title, action)
 
 	switch action {
 	case ActionNoChange:
