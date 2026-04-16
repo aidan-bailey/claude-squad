@@ -5,11 +5,15 @@ import (
 	"claude-squad/log"
 	"claude-squad/session/git"
 	"claude-squad/session/tmux"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+const reconcileTmuxTimeout = 5 * time.Second
 
 // RecoveryAction describes what to do with an instance during startup reconciliation.
 type RecoveryAction int
@@ -32,7 +36,9 @@ const (
 // CheckTmuxAlive checks if a tmux session exists by its sanitized name.
 func CheckTmuxAlive(sessionTitle string, cmdExec cmd.Executor) bool {
 	sanitized := tmux.ToClaudeSquadTmuxName(sessionTitle)
-	existsCmd := exec.Command("tmux", "has-session", "-t="+sanitized)
+	ctx, cancel := context.WithTimeout(context.Background(), reconcileTmuxTimeout)
+	defer cancel()
+	existsCmd := exec.CommandContext(ctx, "tmux", "has-session", "-t="+sanitized)
 	return cmdExec.Run(existsCmd) == nil
 }
 
@@ -100,8 +106,10 @@ func ReconcileAndRestore(data InstanceData, configDir string, cmdExec cmd.Execut
 
 	case ActionKillAndPause:
 		sanitized := tmux.ToClaudeSquadTmuxName(data.Title)
-		killCmd := exec.Command("tmux", "kill-session", "-t="+sanitized)
+		killCtx, killCancel := context.WithTimeout(context.Background(), reconcileTmuxTimeout)
+		killCmd := exec.CommandContext(killCtx, "tmux", "kill-session", "-t="+sanitized)
 		_ = cmdExec.Run(killCmd) // best-effort
+		killCancel()
 		data.Status = Paused
 		return fromInstanceDataPaused(data, configDir)
 
@@ -164,7 +172,9 @@ func fromInstanceDataPaused(data InstanceData, configDir string) (*Instance, err
 // CleanupOrphanedSessions kills any tmux sessions with the claude-squad prefix
 // that are not claimed by a loaded instance.
 func CleanupOrphanedSessions(claimedTitles map[string]bool, cmdExec cmd.Executor) error {
-	listCmd := exec.Command("tmux", "ls")
+	listCtx, listCancel := context.WithTimeout(context.Background(), reconcileTmuxTimeout)
+	defer listCancel()
+	listCmd := exec.CommandContext(listCtx, "tmux", "ls")
 	output, err := cmdExec.Output(listCmd)
 	if err != nil {
 		// No tmux server running — nothing to clean up
@@ -193,10 +203,12 @@ func CleanupOrphanedSessions(claimedTitles map[string]bool, cmdExec cmd.Executor
 
 		if !claimed {
 			log.InfoLog.Printf("killing orphaned tmux session: %s", sessionName)
-			killCmd := exec.Command("tmux", "kill-session", "-t", sessionName)
+			killCtx, killCancel := context.WithTimeout(context.Background(), reconcileTmuxTimeout)
+			killCmd := exec.CommandContext(killCtx, "tmux", "kill-session", "-t", sessionName)
 			if err := cmdExec.Run(killCmd); err != nil {
 				log.ErrorLog.Printf("failed to kill orphaned session %s: %v", sessionName, err)
 			}
+			killCancel()
 		}
 	}
 	return nil

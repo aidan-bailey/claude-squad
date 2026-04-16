@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -25,7 +26,9 @@ func (d *DiffStats) IsEmpty() bool {
 
 // CurrentBranch returns the current branch name for the given repo directory.
 func CurrentBranch(repoPath string) (string, error) {
-	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "--abbrev-ref", "HEAD")
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "rev-parse", "--abbrev-ref", "HEAD")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse failed: %s (%w)", output, err)
@@ -39,7 +42,9 @@ func CurrentBranch(repoPath string) (string, error) {
 func DiffUncommitted(repoPath string) *DiffStats {
 	stats := &DiffStats{}
 
-	cmd := exec.Command("git", "-C", repoPath, "--no-pager", "diff", "HEAD")
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "--no-pager", "diff", "HEAD")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		stats.Error = fmt.Errorf("git diff failed: %s (%w)", output, err)
@@ -118,7 +123,9 @@ func (g *GitWorktree) DiffShortStat() *DiffStats {
 // DiffUncommittedShortStat returns only line counts for uncommitted changes.
 func DiffUncommittedShortStat(repoPath string) *DiffStats {
 	stats := &DiffStats{}
-	cmd := exec.Command("git", "-C", repoPath, "--no-pager", "diff", "--shortstat", "HEAD")
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "--no-pager", "diff", "--shortstat", "HEAD")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		stats.Error = fmt.Errorf("git diff --shortstat failed: %s (%w)", output, err)

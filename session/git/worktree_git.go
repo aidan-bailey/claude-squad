@@ -2,17 +2,28 @@ package git
 
 import (
 	"claude-squad/log"
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // MaxBranchSearchResults is the maximum number of branches returned by SearchBranches.
 const MaxBranchSearchResults = 50
 
+// gitTimeout bounds any single git subprocess. The metadata tick fans these out
+// on every tick, so a hung git process would freeze the UI without this cap.
+const gitTimeout = 8 * time.Second
+
+// gitNetworkTimeout applies to commands that talk to a remote (push/sync/fetch).
+const gitNetworkTimeout = 30 * time.Second
+
 // FetchBranches fetches and prunes remote-tracking branches (best-effort, won't fail if offline).
 func FetchBranches(repoPath string) {
-	cmd := exec.Command("git", "-C", repoPath, "fetch", "--prune")
+	ctx, cancel := context.WithTimeout(context.Background(), gitNetworkTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "fetch", "--prune")
 	_ = cmd.Run()
 }
 
@@ -20,7 +31,9 @@ func FetchBranches(repoPath string) {
 // ordered by most recently updated first. Returns at most MaxBranchSearchResults.
 // If filter is empty, returns all branches up to the limit.
 func SearchBranches(repoPath, filter string) ([]string, error) {
-	cmd := exec.Command("git", "-C", repoPath, "branch", "-a",
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", repoPath, "branch", "-a",
 		"--sort=-committerdate",
 		"--format=%(refname:short)")
 	output, err := cmd.CombinedOutput()
@@ -52,12 +65,19 @@ func SearchBranches(repoPath, filter string) ([]string, error) {
 	return branches, nil
 }
 
-// runGitCommand executes a git command and returns any error
+// runGitCommand executes a git command and returns any error.
+// Applies gitTimeout to bound wall time — critical for the metadata tick,
+// which fans this out every few seconds.
 func (g *GitWorktree) runGitCommand(path string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
 	baseArgs := []string{"-C", path}
-	cmd := exec.Command("git", append(baseArgs, args...)...)
+	cmd := exec.CommandContext(ctx, "git", append(baseArgs, args...)...)
 
 	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("git command timed out after %s: git %s", gitTimeout, strings.Join(args, " "))
+	}
 	if err != nil {
 		return "", fmt.Errorf("git command failed: %s (%w)", output, err)
 	}
@@ -90,11 +110,13 @@ func (g *GitWorktree) PushChanges(commitMessage string, open bool) error {
 	}
 
 	// First push the branch to remote to ensure it exists
-	pushCmd := exec.Command("gh", "repo", "sync", "--source", "-b", g.branchName)
+	ctx, cancel := context.WithTimeout(context.Background(), gitNetworkTimeout)
+	defer cancel()
+	pushCmd := exec.CommandContext(ctx, "gh", "repo", "sync", "--source", "-b", g.branchName)
 	pushCmd.Dir = g.worktreePath
 	if err := pushCmd.Run(); err != nil {
 		// If sync fails, try creating the branch on remote first
-		gitPushCmd := exec.Command("git", "push", "-u", "origin", g.branchName)
+		gitPushCmd := exec.CommandContext(ctx, "git", "push", "-u", "origin", g.branchName)
 		gitPushCmd.Dir = g.worktreePath
 		if pushOutput, pushErr := gitPushCmd.CombinedOutput(); pushErr != nil {
 			return fmt.Errorf("failed to push branch: %s (%w)", pushOutput, pushErr)
@@ -102,7 +124,9 @@ func (g *GitWorktree) PushChanges(commitMessage string, open bool) error {
 	}
 
 	// Now sync with remote
-	syncCmd := exec.Command("gh", "repo", "sync", "-b", g.branchName)
+	syncCtx, syncCancel := context.WithTimeout(context.Background(), gitNetworkTimeout)
+	defer syncCancel()
+	syncCmd := exec.CommandContext(syncCtx, "gh", "repo", "sync", "-b", g.branchName)
 	syncCmd.Dir = g.worktreePath
 	if output, err := syncCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to sync changes: %s (%w)", output, err)
@@ -167,7 +191,9 @@ func (g *GitWorktree) OpenBranchURL() error {
 		return err
 	}
 
-	cmd := exec.Command("gh", "browse", "--branch", g.branchName)
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "browse", "--branch", g.branchName)
 	cmd.Dir = g.worktreePath
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to open branch URL: %w", err)
