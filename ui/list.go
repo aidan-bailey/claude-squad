@@ -497,7 +497,6 @@ func (l *List) RemoveInstanceByTitle(title string) {
 	l.ensureSelectedVisible()
 }
 
-
 // Up selects the prev item in the list.
 func (l *List) Up() {
 	if len(l.items) == 0 {

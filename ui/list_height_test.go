@@ -25,8 +25,8 @@ func TestListRenderDimensions(t *testing.T) {
 	// Create instances with various statuses to test all branches.
 	mkInstance := func(title string, status session.Status, isWT bool) *session.Instance {
 		inst := &session.Instance{
-			Title:                title,
-			IsWorkspaceTerminal:  isWT,
+			Title:               title,
+			IsWorkspaceTerminal: isWT,
 		}
 		inst.SetStatus(status)
 		return inst

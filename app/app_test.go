@@ -439,7 +439,7 @@ func TestMultipleConfirmationsDontInterfere(t *testing.T) {
 type mockInstanceStorage struct{}
 
 func (m *mockInstanceStorage) SaveInstances(_ json.RawMessage) error { return nil }
-func (m *mockInstanceStorage) GetInstances() json.RawMessage        { return nil }
+func (m *mockInstanceStorage) GetInstances() json.RawMessage         { return nil }
 func (m *mockInstanceStorage) DeleteAllInstances() error             { return nil }
 
 // TestAutoFocusAgentAfterInstanceStart verifies that after a new session finishes
