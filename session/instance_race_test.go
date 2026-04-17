@@ -22,8 +22,8 @@ func TestInstance_ConcurrentStatusReadWrite(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < n; i++ {
-			inst.SetStatus(Running)
-			inst.SetStatus(Paused)
+			_ = inst.TransitionTo(Running)
+			_ = inst.TransitionTo(Paused)
 		}
 	}()
 	go func() {

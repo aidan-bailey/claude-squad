@@ -2,36 +2,24 @@ package cmd
 
 import (
 	"os/exec"
-	"strings"
+
+	internalexec "claude-squad/internal/exec"
 )
 
-type Executor interface {
-	Run(cmd *exec.Cmd) error
-	Output(cmd *exec.Cmd) ([]byte, error)
-	CombinedOutput(cmd *exec.Cmd) ([]byte, error)
-}
+// Executor is re-exported from internal/exec so session/git and cmd share
+// the same interface without either importing the other (cmd imports
+// session/git already).
+type Executor = internalexec.Executor
 
-type Exec struct{}
+// Exec is the production implementation, aliased from internal/exec.Default.
+type Exec = internalexec.Default
 
-func (e Exec) Run(cmd *exec.Cmd) error {
-	return cmd.Run()
-}
-
-func (e Exec) Output(cmd *exec.Cmd) ([]byte, error) {
-	return cmd.Output()
-}
-
-func (e Exec) CombinedOutput(cmd *exec.Cmd) ([]byte, error) {
-	return cmd.CombinedOutput()
-}
-
+// MakeExecutor returns a production Executor.
 func MakeExecutor() Executor {
-	return Exec{}
+	return internalexec.Default{}
 }
 
+// ToString renders a command for logs in "argv joined by spaces" form.
 func ToString(cmd *exec.Cmd) string {
-	if cmd == nil {
-		return "<nil>"
-	}
-	return strings.Join(cmd.Args, " ")
+	return internalexec.ToString(cmd)
 }

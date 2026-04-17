@@ -2,33 +2,20 @@ package git
 
 import (
 	"claude-squad/config"
+	internalexec "claude-squad/internal/exec"
 	"claude-squad/log"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"time"
 )
 
-// CommandRunner abstracts subprocess execution so tests can mock git
-// invocations. Satisfied by cmd.Executor via structural typing — defining it
-// here avoids an import cycle (cmd/workspace.go already imports session/git).
-type CommandRunner interface {
-	Run(c *exec.Cmd) error
-	Output(c *exec.Cmd) ([]byte, error)
-	CombinedOutput(c *exec.Cmd) ([]byte, error)
-}
-
-// realRunner is the default subprocess runner. Mirrors cmd.Exec but kept local
-// so callers that don't already depend on claude-squad/cmd (like main.go's
-// cleanup path) don't have to import it just to satisfy CommandRunner.
-type realRunner struct{}
-
-func (realRunner) Run(c *exec.Cmd) error                      { return c.Run() }
-func (realRunner) Output(c *exec.Cmd) ([]byte, error)         { return c.Output() }
-func (realRunner) CombinedOutput(c *exec.Cmd) ([]byte, error) { return c.CombinedOutput() }
+// CommandRunner is an alias for internal/exec.Executor. Kept as a type alias
+// so git-package callers keep the familiar name while the concrete interface
+// lives in a leaf package shared with cmd/.
+type CommandRunner = internalexec.Executor
 
 // DefaultRunner returns the production subprocess runner.
-func DefaultRunner() CommandRunner { return realRunner{} }
+func DefaultRunner() CommandRunner { return internalexec.Default{} }
 
 func getWorktreeDirectory(configDir string) (string, error) {
 	if configDir == "" {
@@ -65,7 +52,7 @@ type GitWorktree struct {
 
 func defaultRunner(r CommandRunner) CommandRunner {
 	if r == nil {
-		return realRunner{}
+		return internalexec.Default{}
 	}
 	return r
 }
@@ -118,14 +105,20 @@ func NewGitWorktree(repoPath string, sessionName string, configDir string) (tree
 }
 
 // NewGitWorktreeWithRunner is NewGitWorktree with an injected CommandRunner
-// (used by tests). Passing nil falls back to the default runner.
+// (used by tests). Passing nil falls back to the default runner. configDir
+// must be a concrete workspace config directory (callers thread this
+// through via config.WorkspaceContext); passing empty string falls back to
+// the global directory and logs a warning.
 func NewGitWorktreeWithRunner(repoPath string, sessionName string, configDir string, runner CommandRunner) (tree *GitWorktree, branchname string, err error) {
-	var cfg *config.Config
-	if configDir != "" {
-		cfg = config.LoadConfigFrom(configDir)
-	} else {
-		cfg = config.LoadConfig()
+	if configDir == "" {
+		log.WarningLog.Printf("NewGitWorktreeWithRunner called without a configDir; falling back to global config")
+		resolved, resolveErr := config.GetConfigDir()
+		if resolveErr != nil {
+			return nil, "", fmt.Errorf("resolve config dir: %w", resolveErr)
+		}
+		configDir = resolved
 	}
+	cfg := config.LoadConfigFrom(configDir)
 	branchName := fmt.Sprintf("%s%s", cfg.BranchPrefix, sessionName)
 	// Sanitize the final branch name to handle invalid characters from any source
 	// (e.g., backslashes from Windows domain usernames like DOMAIN\user)

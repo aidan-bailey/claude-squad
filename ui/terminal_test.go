@@ -177,7 +177,7 @@ func TestTerminalFallbackStates(t *testing.T) {
 			Program: "bash",
 		})
 		require.NoError(t, err)
-		instance.SetStatus(session.Paused)
+		_ = instance.TransitionTo(session.Paused)
 
 		err = tp.UpdateContent(instance)
 		require.NoError(t, err)

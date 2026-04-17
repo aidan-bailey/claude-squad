@@ -135,7 +135,7 @@ type Instance struct {
 	// lifecycle Cmd goroutines (tmuxSession, gitWorktree, started).
 	// Held for writes; RLock for reads. Do not hold across I/O.
 	//
-	// Every accessor on Instance goes through SetStatus/GetStatus,
+	// Every accessor on Instance goes through TransitionTo/GetStatus,
 	// GetBranch, GetDiffStats, Snapshot, or the unexported get*/set*
 	// helpers below. Do not read or write these fields directly from
 	// outside the locked accessors.
@@ -301,9 +301,6 @@ func (i *Instance) RepoName() (string, error) {
 // TransitionTo validates from→to against the state-machine allow-list and
 // updates Status atomically. Disallowed transitions return an error and
 // leave Status unchanged. Self-transitions are no-ops (success).
-//
-// Prefer this over SetStatus in new code so genuine state bugs surface as
-// errors rather than silent corruption.
 func (i *Instance) TransitionTo(to Status) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -316,20 +313,6 @@ func (i *Instance) TransitionTo(to Status) error {
 	}
 	i.Status = to
 	return nil
-}
-
-// SetStatus is a compatibility shim preserved for call sites that predate
-// the state machine. It routes through the allow-list and logs a warning
-// on disallowed transitions, but always writes the target status so the
-// legacy behavior is preserved. New code should use TransitionTo.
-func (i *Instance) SetStatus(status Status) {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	from := i.Status
-	if from != status && !IsAllowedTransition(from, status) {
-		log.WarningLog.Printf("disallowed status transition via SetStatus shim for %q: %s → %s", i.Title, from, status)
-	}
-	i.Status = status
 }
 
 // GetStatus returns the current status under a read lock.
@@ -510,7 +493,7 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 		}
 	}
 
-	i.SetStatus(Running)
+	_ = i.TransitionTo(Running)
 
 	return nil
 }
@@ -770,7 +753,7 @@ func (i *Instance) Pause(saveState func() error) error {
 
 	// Checkpoint: mark as Paused immediately after cleanup succeeds.
 	// If we crash after this point, the instance is safely Paused.
-	i.SetStatus(Paused)
+	_ = i.TransitionTo(Paused)
 	if saveState != nil {
 		if err := saveState(); err != nil {
 			log.WarningLog.Printf("checkpoint save during pause: %v", err)
@@ -825,7 +808,7 @@ func (i *Instance) Resume(saveState func() error) error {
 		}
 	}
 
-	i.SetStatus(Running)
+	_ = i.TransitionTo(Running)
 	if saveState != nil {
 		if err := saveState(); err != nil {
 			log.WarningLog.Printf("checkpoint save during resume: %v", err)
@@ -879,7 +862,7 @@ func (i *Instance) CrashRestart() error {
 	// program string carries --continue, and a later Resume would start that
 	// modified program on a fresh conversation.
 	i.setTmuxSession(ts)
-	i.SetStatus(Running)
+	_ = i.TransitionTo(Running)
 	return nil
 }
 

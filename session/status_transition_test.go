@@ -69,12 +69,3 @@ func TestTransitionTo_SelfIsNoOp(t *testing.T) {
 	assert.NoError(t, inst.TransitionTo(Running))
 	assert.Equal(t, Running, inst.GetStatus())
 }
-
-func TestSetStatus_SoftShimAlwaysWrites(t *testing.T) {
-	// Legacy contract: SetStatus writes the target status even when the
-	// transition is illegal (warning logged). Exercises the shim behavior
-	// relied on by pre-TransitionTo call sites.
-	inst := &Instance{Title: "t", Status: Paused}
-	inst.SetStatus(Prompting)
-	assert.Equal(t, Prompting, inst.GetStatus())
-}

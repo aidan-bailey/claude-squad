@@ -257,7 +257,7 @@ func newHome(ctx context.Context, wsCtx *config.WorkspaceContext, registry *conf
 			}
 			if err := inst.CrashRestart(); err != nil {
 				log.ErrorLog.Printf("crash-recovery restart for %q failed: %v", inst.Title, err)
-				inst.SetStatus(session.Paused)
+				_ = inst.TransitionTo(session.Paused)
 			}
 			inst.CrashRecovered = false
 		}
@@ -538,17 +538,17 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					continue
 				}
 				log.WarningLog.Printf("tmux session for %q is gone, marking as paused", r.instance.Title)
-				r.instance.SetStatus(session.Paused)
+				_ = r.instance.TransitionTo(session.Paused)
 				continue
 			}
 			if r.updated {
-				r.instance.SetStatus(session.Running)
+				_ = r.instance.TransitionTo(session.Running)
 			} else {
 				if r.hasPrompt {
 					r.instance.TapEnter()
-					r.instance.SetStatus(session.Prompting)
+					_ = r.instance.TransitionTo(session.Prompting)
 				} else {
-					r.instance.SetStatus(session.Ready)
+					_ = r.instance.TransitionTo(session.Ready)
 				}
 			}
 			if r.diffErr != nil {
@@ -607,14 +607,13 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.instanceChanged()
 	case transitionFailedMsg:
 		// Revert instance status on failed background op (kill/pause/resume).
+		// previousStatus came from this same instance, so the reverse
+		// transition should always be allowed; if the state machine rejects
+		// it, log and leave the status as-is rather than masking a real bug.
 		for _, inst := range m.list.GetInstances() {
 			if inst.Title == msg.title {
 				if terr := inst.TransitionTo(msg.previousStatus); terr != nil {
-					// previousStatus came from this same instance, so a reject
-					// here means the state machine drifted under us — log and
-					// fall back to the shim to preserve legacy behavior.
 					log.WarningLog.Printf("revert transition: %v", terr)
-					inst.SetStatus(msg.previousStatus)
 				}
 				break
 			}
@@ -831,7 +830,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			}
 
 			// Set Loading status and finalize into the list immediately
-			instance.SetStatus(session.Loading)
+			_ = instance.TransitionTo(session.Loading)
 			m.newInstanceFinalizer()
 			m.promptAfterName = false
 			m.state = stateDefault
@@ -921,7 +920,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 					selected.Prompt = prompt
 
 					// Finalize into list and start
-					selected.SetStatus(session.Loading)
+					_ = selected.TransitionTo(session.Loading)
 					m.newInstanceFinalizer()
 					m.textInputOverlay = nil
 					m.state = stateDefault
@@ -1831,7 +1830,7 @@ func (m *home) activateWorkspace(ws config.Workspace) error {
 		}
 		if err := inst.CrashRestart(); err != nil {
 			log.ErrorLog.Printf("crash-recovery restart for %q failed: %v", inst.Title, err)
-			inst.SetStatus(session.Paused)
+			_ = inst.TransitionTo(session.Paused)
 		}
 		inst.CrashRecovered = false
 	}

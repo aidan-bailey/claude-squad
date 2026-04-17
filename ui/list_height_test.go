@@ -28,7 +28,7 @@ func TestListRenderDimensions(t *testing.T) {
 			Title:               title,
 			IsWorkspaceTerminal: isWT,
 		}
-		inst.SetStatus(status)
+		_ = inst.TransitionTo(status)
 		return inst
 	}
 

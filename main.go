@@ -56,7 +56,8 @@ var (
 				} else {
 					cfg = config.LoadConfigFrom(daemonDir)
 				}
-				err := daemon.RunDaemon(cfg, daemonDir)
+				daemonCtx := &config.WorkspaceContext{ConfigDir: daemonDir}
+				err := daemon.RunDaemon(cfg, daemonCtx)
 				if err != nil {
 					log.ErrorLog.Printf("failed to start daemon: %v", err)
 				}
@@ -151,13 +152,13 @@ var (
 			}
 			if autoYes {
 				defer func() {
-					if err := daemon.LaunchDaemon(wsCtx.ConfigDir); err != nil {
+					if err := daemon.LaunchDaemon(wsCtx); err != nil {
 						log.ErrorLog.Printf("failed to launch daemon: %v", err)
 					}
 				}()
 			}
 			// Kill any daemon that's running.
-			if err := daemon.StopDaemon(wsCtx.ConfigDir); err != nil {
+			if err := daemon.StopDaemon(wsCtx); err != nil {
 				log.ErrorLog.Printf("failed to stop daemon: %v", err)
 			}
 
@@ -200,7 +201,7 @@ var (
 			}
 			fmt.Println("Worktrees have been cleaned up")
 
-			if err := daemon.StopDaemon(wsCtx.ConfigDir); err != nil {
+			if err := daemon.StopDaemon(wsCtx); err != nil {
 				return err
 			}
 			fmt.Println("daemon has been stopped")
@@ -213,17 +214,17 @@ var (
 		Use:   "debug",
 		Short: "Print debug information like config paths",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			configDir, err := config.GetConfigDir()
+			wsCtx, err := config.GlobalWorkspaceContext()
 			if err != nil {
-				configDir = os.TempDir()
+				return fmt.Errorf("failed to resolve workspace context: %w", err)
 			}
-			log.Initialize(filepath.Join(configDir, "logs"), false)
+			log.Initialize(filepath.Join(wsCtx.ConfigDir, "logs"), false)
 			defer log.Close()
 
-			cfg := config.LoadConfig()
+			cfg := config.LoadConfigFrom(wsCtx.ConfigDir)
 			configJson, _ := json.MarshalIndent(cfg, "", "  ")
 
-			fmt.Printf("Config: %s\n%s\n", filepath.Join(configDir, config.ConfigFileName), configJson)
+			fmt.Printf("Config: %s\n%s\n", filepath.Join(wsCtx.ConfigDir, config.ConfigFileName), configJson)
 
 			return nil
 		},

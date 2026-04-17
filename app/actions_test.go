@@ -69,13 +69,13 @@ func TestSelectedNotBusyRejectsLoadingAndDeleting(t *testing.T) {
 	require.NoError(t, err)
 	_ = h.list.AddInstance(instance)
 
-	instance.SetStatus(session.Loading)
+	_ = instance.TransitionTo(session.Loading)
 	assert.False(t, selectedNotBusy(h), "Loading should block")
 
-	instance.SetStatus(session.Deleting)
+	_ = instance.TransitionTo(session.Deleting)
 	assert.False(t, selectedNotBusy(h), "Deleting should block")
 
-	instance.SetStatus(session.Running)
+	_ = instance.TransitionTo(session.Running)
 	assert.True(t, selectedNotBusy(h), "Running is a normal state")
 }
 

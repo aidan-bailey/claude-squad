@@ -529,7 +529,7 @@ func TestKillSetsStatusToDeletingImmediately(t *testing.T) {
 		Program: "claude",
 	})
 	require.NoError(t, err)
-	instance.SetStatus(session.Running)
+	_ = instance.TransitionTo(session.Running)
 	_ = list.AddInstance(instance)
 	list.SetSelectedInstance(0)
 
@@ -545,7 +545,7 @@ func TestKillSetsStatusToDeletingImmediately(t *testing.T) {
 	// Set up a task like the kill handler does
 	h.confirmTask("[!] Kill session 'test-delete'?", overlay.ConfirmationTask{
 		Sync: func() {
-			instance.SetStatus(session.Deleting)
+			_ = instance.TransitionTo(session.Deleting)
 		},
 		Async: func() tea.Msg {
 			return killInstanceMsg{title: "test-delete"}
@@ -572,7 +572,7 @@ func TestTransitionFailedMsgRevertsStatus(t *testing.T) {
 		Program: "claude",
 	})
 	require.NoError(t, err)
-	instance.SetStatus(session.Deleting)
+	_ = instance.TransitionTo(session.Deleting)
 	_ = list.AddInstance(instance)
 
 	h := &home{
@@ -602,17 +602,17 @@ func TestPersistableInstancesFiltersDeleting(t *testing.T) {
 	running, _ := session.NewInstance(session.InstanceOptions{
 		Title: "running", Path: t.TempDir(), Program: "claude",
 	})
-	running.SetStatus(session.Running)
+	_ = running.TransitionTo(session.Running)
 
 	deleting, _ := session.NewInstance(session.InstanceOptions{
 		Title: "deleting", Path: t.TempDir(), Program: "claude",
 	})
-	deleting.SetStatus(session.Deleting)
+	_ = deleting.TransitionTo(session.Deleting)
 
 	paused, _ := session.NewInstance(session.InstanceOptions{
 		Title: "paused", Path: t.TempDir(), Program: "claude",
 	})
-	paused.SetStatus(session.Paused)
+	_ = paused.TransitionTo(session.Paused)
 
 	result := persistableInstances([]*session.Instance{running, deleting, paused})
 	assert.Len(t, result, 2)

@@ -16,8 +16,7 @@ import (
 
 // reloadInstances reads state.json and returns the fresh instance set.
 // Called every tick so the daemon observes instances added or removed
-// by the main app (DAEMON-03). configDir is the workspace config
-// directory; if empty, falls back to GetConfigDir().
+// by the main app (DAEMON-03).
 func reloadInstances(configDir string) ([]*session.Instance, error) {
 	state := config.LoadStateFrom(configDir)
 	storage, err := session.NewStorage(state, configDir)
@@ -29,8 +28,12 @@ func reloadInstances(configDir string) ([]*session.Instance, error) {
 
 // RunDaemon runs the daemon process which iterates over all sessions and runs AutoYes mode on them.
 // It's expected that the main process kills the daemon when the main process starts.
-// configDir is the workspace config directory; if empty, falls back to GetConfigDir().
-func RunDaemon(cfg *config.Config, configDir string) error {
+// wsCtx must carry a resolved ConfigDir.
+func RunDaemon(cfg *config.Config, wsCtx *config.WorkspaceContext) error {
+	if wsCtx == nil || wsCtx.ConfigDir == "" {
+		return fmt.Errorf("RunDaemon: workspace context with resolved ConfigDir required")
+	}
+	configDir := wsCtx.ConfigDir
 	log.InfoLog.Printf("starting daemon")
 
 	// Initial load so that startup errors fail fast (e.g. corrupt state.json).
@@ -118,18 +121,20 @@ func RunDaemon(cfg *config.Config, configDir string) error {
 }
 
 // LaunchDaemon launches the daemon process.
-// configDir is the workspace config directory; if empty, falls back to GetConfigDir().
-func LaunchDaemon(configDir string) error {
+// wsCtx must carry a resolved ConfigDir.
+func LaunchDaemon(wsCtx *config.WorkspaceContext) error {
+	if wsCtx == nil || wsCtx.ConfigDir == "" {
+		return fmt.Errorf("LaunchDaemon: workspace context with resolved ConfigDir required")
+	}
+	configDir := wsCtx.ConfigDir
+
 	// Find the claude squad binary.
 	execPath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("failed to get executable path: %w", err)
 	}
 
-	args := []string{"--daemon"}
-	if configDir != "" {
-		args = append(args, "--config-dir", configDir)
-	}
+	args := []string{"--daemon", "--config-dir", configDir}
 	cmd := exec.Command(execPath, args...)
 
 	// Detach the process from the parent
@@ -146,16 +151,7 @@ func LaunchDaemon(configDir string) error {
 
 	log.InfoLog.Printf("started daemon child process with PID: %d", cmd.Process.Pid)
 
-	// Save PID to a file for later management
-	pidDir := configDir
-	if pidDir == "" {
-		pidDir, err = config.GetConfigDir()
-		if err != nil {
-			return fmt.Errorf("failed to get config directory: %w", err)
-		}
-	}
-
-	pidFile := filepath.Join(pidDir, "daemon.pid")
+	pidFile := filepath.Join(configDir, "daemon.pid")
 	if err := config.AtomicWriteFile(pidFile, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644); err != nil {
 		return fmt.Errorf("failed to write PID file: %w", err)
 	}
@@ -166,18 +162,12 @@ func LaunchDaemon(configDir string) error {
 
 // StopDaemon attempts to stop a running daemon process if it exists. Returns no error if the daemon is not found
 // (assumes the daemon does not exist).
-// configDir is the workspace config directory; if empty, falls back to GetConfigDir().
-func StopDaemon(configDir string) error {
-	pidDir := configDir
-	if pidDir == "" {
-		var err error
-		pidDir, err = config.GetConfigDir()
-		if err != nil {
-			return fmt.Errorf("failed to get config directory: %w", err)
-		}
+// wsCtx must carry a resolved ConfigDir.
+func StopDaemon(wsCtx *config.WorkspaceContext) error {
+	if wsCtx == nil || wsCtx.ConfigDir == "" {
+		return fmt.Errorf("StopDaemon: workspace context with resolved ConfigDir required")
 	}
-
-	pidFile := filepath.Join(pidDir, "daemon.pid")
+	pidFile := filepath.Join(wsCtx.ConfigDir, "daemon.pid")
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
 		if os.IsNotExist(err) {
