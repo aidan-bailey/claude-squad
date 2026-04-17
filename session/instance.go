@@ -157,6 +157,7 @@ func (i *Instance) Snapshot() InstanceData {
 	defer i.mu.RUnlock()
 
 	data := InstanceData{
+		SchemaVersion:       CurrentSchemaVersion,
 		Title:               i.Title,
 		Path:                i.Path,
 		Branch:              i.Branch,

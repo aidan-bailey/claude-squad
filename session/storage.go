@@ -9,8 +9,19 @@ import (
 	"time"
 )
 
-// InstanceData represents the serializable data of an Instance
+// CurrentSchemaVersion is the schema version written by the current
+// binary. Any on-disk InstanceData with a lower SchemaVersion is routed
+// through storage_migrate.go's Migrate before use.
+const CurrentSchemaVersion = 1
+
+// InstanceData represents the serializable data of an Instance.
+//
+// SchemaVersion is tracked for forward-compatible migrations. A missing
+// field (zero) is interpreted as v0 (pre-versioning); migrations.go
+// upgrades it to CurrentSchemaVersion at decode time.
 type InstanceData struct {
+	SchemaVersion int `json:"schema_version,omitempty"`
+
 	Title     string    `json:"title"`
 	Path      string    `json:"path"`
 	Branch    string    `json:"branch"`
@@ -80,10 +91,8 @@ func (s *Storage) SaveInstances(instances []*Instance) error {
 
 // LoadInstances loads the list of instances from disk
 func (s *Storage) LoadInstances() ([]*Instance, error) {
-	jsonData := s.state.GetInstances()
-
-	var instancesData []InstanceData
-	if err := json.Unmarshal(jsonData, &instancesData); err != nil {
+	instancesData, err := MigrateAll(s.state.GetInstances())
+	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal instances: %w", err)
 	}
 
@@ -185,10 +194,10 @@ func (s *Storage) saveInstanceData(data []InstanceData) error {
 
 // LoadInstanceData loads raw serialized instance data without constructing Instance objects.
 // Used by reconciliation to inspect state before deciding how to restore.
+// All records pass through Migrate so callers receive CurrentSchemaVersion data.
 func (s *Storage) LoadInstanceData() ([]InstanceData, error) {
-	jsonData := s.state.GetInstances()
-	var data []InstanceData
-	if err := json.Unmarshal(jsonData, &data); err != nil {
+	data, err := MigrateAll(s.state.GetInstances())
+	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal instances: %w", err)
 	}
 	return data, nil
