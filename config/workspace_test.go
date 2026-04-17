@@ -3,6 +3,8 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -376,6 +378,61 @@ func TestEnsureGitignore(t *testing.T) {
 		content := string(data)
 		// The comment should start on its own line.
 		assert.Contains(t, content, "\n# claude-squad local data")
+	})
+
+	// Concurrent callers must not multiply the entry. The pre-fix code did
+	// ReadFile → check-absent → OpenFile(O_APPEND) → WriteString, so N
+	// racers each observed an absent entry and each appended their own
+	// copy. Atomic temp-file-plus-rename collapses this: the last rename
+	// wins and produces a single well-formed entry.
+	t.Run("concurrent invocations produce single entry", func(t *testing.T) {
+		repoDir := t.TempDir()
+
+		// Seed with a large-ish existing .gitignore so every goroutine spends
+		// non-trivial time in the read-and-check phase. Without this, the
+		// first caller creates and writes the file before any other caller
+		// even reaches ReadFile, and the race never surfaces.
+		var seed strings.Builder
+		for i := 0; i < 500; i++ {
+			seed.WriteString("seed-pattern-")
+			seed.WriteString(strings.Repeat("x", 40))
+			seed.WriteByte('\n')
+		}
+		require.NoError(t, os.WriteFile(
+			filepath.Join(repoDir, ".gitignore"),
+			[]byte(seed.String()),
+			0644,
+		))
+
+		const n = 50
+		release := make(chan struct{})
+		var done sync.WaitGroup
+		done.Add(n)
+		errs := make(chan error, n)
+		for i := 0; i < n; i++ {
+			go func() {
+				defer done.Done()
+				<-release
+				if err := EnsureGitignore(repoDir); err != nil {
+					errs <- err
+				}
+			}()
+		}
+		close(release) // broadcast: all N start together, maximizing contention
+		done.Wait()
+		close(errs)
+		for err := range errs {
+			assert.NoError(t, err)
+		}
+
+		data, err := os.ReadFile(filepath.Join(repoDir, ".gitignore"))
+		require.NoError(t, err)
+		content := string(data)
+
+		entryCount := strings.Count(content, ".claude-squad/")
+		commentCount := strings.Count(content, "# claude-squad local data")
+		assert.Equal(t, 1, entryCount, "entry should appear exactly once under concurrency; got: %q", content)
+		assert.Equal(t, 1, commentCount, "comment should appear exactly once under concurrency; got: %q", content)
 	})
 }
 

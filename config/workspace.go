@@ -289,6 +289,10 @@ func (r *WorkspaceRegistry) GetOpenWorkspaces() []Workspace {
 }
 
 // EnsureGitignore ensures .claude-squad/ is listed in the repo's .gitignore.
+// Writes atomically via AtomicWriteFile so a crash or a concurrent call can't
+// leave a half-written entry behind. An O_APPEND-based write would issue two
+// syscalls (newline fixup, then entry), and racing callers each saw an absent
+// entry and each appended their own copy.
 func EnsureGitignore(repoPath string) error {
 	gitignorePath := filepath.Join(repoPath, ".gitignore")
 
@@ -300,31 +304,25 @@ func EnsureGitignore(repoPath string) error {
 		return fmt.Errorf("failed to read .gitignore: %w", err)
 	}
 
-	// Check if already present.
-	if err == nil {
-		lines := strings.Split(string(data), "\n")
-		for _, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			if trimmed == entry || trimmed == entry+"/" {
-				return nil // already present
-			}
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == entry || trimmed == entry+"/" {
+			return nil
 		}
 	}
 
-	// Append the entry.
-	f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open .gitignore: %w", err)
-	}
-	defer f.Close()
-
-	// Add a newline before comment if file has content and doesn't end with newline.
+	newContent := make([]byte, 0, len(data)+len(comment)+len(entry)+3)
+	newContent = append(newContent, data...)
 	if len(data) > 0 && data[len(data)-1] != '\n' {
-		if _, err := f.WriteString("\n"); err != nil {
-			return err
-		}
+		newContent = append(newContent, '\n')
 	}
+	newContent = append(newContent, comment...)
+	newContent = append(newContent, '\n')
+	newContent = append(newContent, entry...)
+	newContent = append(newContent, '\n')
 
-	_, err = f.WriteString(comment + "\n" + entry + "\n")
-	return err
+	if err := AtomicWriteFile(gitignorePath, newContent, 0644); err != nil {
+		return fmt.Errorf("failed to write .gitignore: %w", err)
+	}
+	return nil
 }
