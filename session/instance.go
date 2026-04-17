@@ -33,6 +33,52 @@ const (
 	Deleting
 )
 
+// String implements fmt.Stringer for debugging and transition-error messages.
+func (s Status) String() string {
+	switch s {
+	case Running:
+		return "Running"
+	case Ready:
+		return "Ready"
+	case Loading:
+		return "Loading"
+	case Paused:
+		return "Paused"
+	case Prompting:
+		return "Prompting"
+	case Deleting:
+		return "Deleting"
+	default:
+		return fmt.Sprintf("Status(%d)", int(s))
+	}
+}
+
+// allowedTransitions encodes the Status state machine. A Paused instance
+// has no live tmux session, so jumping to Prompting/Ready without first
+// going through Loading/Running would produce an inconsistent UI state —
+// that's the main invariant this table enforces.
+var allowedTransitions = map[Status]map[Status]bool{
+	Ready:     {Loading: true, Running: true, Prompting: true, Paused: true, Deleting: true},
+	Loading:   {Ready: true, Running: true, Prompting: true, Paused: true, Deleting: true},
+	Running:   {Ready: true, Loading: true, Prompting: true, Paused: true, Deleting: true},
+	Prompting: {Ready: true, Loading: true, Running: true, Paused: true, Deleting: true},
+	Paused:    {Loading: true, Running: true, Deleting: true},
+	Deleting:  {Ready: true, Loading: true, Running: true, Prompting: true, Paused: true},
+}
+
+// IsAllowedTransition reports whether from → to is permitted by the
+// Status state machine. Self-transitions are always allowed.
+func IsAllowedTransition(from, to Status) bool {
+	if from == to {
+		return true
+	}
+	targets, ok := allowedTransitions[from]
+	if !ok {
+		return false
+	}
+	return targets[to]
+}
+
 // Instance is a running instance of claude code.
 type Instance struct {
 	// Title is the title of the instance.
@@ -253,9 +299,37 @@ func (i *Instance) RepoName() (string, error) {
 	return i.getGitWorktree().GetRepoName(), nil
 }
 
+// TransitionTo validates from→to against the state-machine allow-list and
+// updates Status atomically. Disallowed transitions return an error and
+// leave Status unchanged. Self-transitions are no-ops (success).
+//
+// Prefer this over SetStatus in new code so genuine state bugs surface as
+// errors rather than silent corruption.
+func (i *Instance) TransitionTo(to Status) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	from := i.Status
+	if from == to {
+		return nil
+	}
+	if !IsAllowedTransition(from, to) {
+		return fmt.Errorf("illegal status transition for %q: %s → %s", i.Title, from, to)
+	}
+	i.Status = to
+	return nil
+}
+
+// SetStatus is a compatibility shim preserved for call sites that predate
+// the state machine. It routes through the allow-list and logs a warning
+// on disallowed transitions, but always writes the target status so the
+// legacy behavior is preserved. New code should use TransitionTo.
 func (i *Instance) SetStatus(status Status) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	from := i.Status
+	if from != status && !IsAllowedTransition(from, status) {
+		log.WarningLog.Printf("disallowed status transition via SetStatus shim for %q: %s → %s", i.Title, from, status)
+	}
 	i.Status = status
 }
 
@@ -803,12 +877,12 @@ func (i *Instance) UpdateDiffStats() error {
 	var stats *git.DiffStats
 	if i.IsWorkspaceTerminal {
 		// Refresh the current branch name for the root repo
-		if branch, err := git.CurrentBranch(i.Path); err == nil {
+		if branch, err := git.CurrentBranch(i.Path, nil); err == nil {
 			i.mu.Lock()
 			i.Branch = branch
 			i.mu.Unlock()
 		}
-		stats = git.DiffUncommitted(i.Path)
+		stats = git.DiffUncommitted(i.Path, nil)
 	} else {
 		stats = i.getGitWorktree().Diff()
 	}
@@ -838,12 +912,12 @@ func (i *Instance) UpdateDiffStatsShort() error {
 	}
 	var stats *git.DiffStats
 	if i.IsWorkspaceTerminal {
-		if branch, err := git.CurrentBranch(i.Path); err == nil {
+		if branch, err := git.CurrentBranch(i.Path, nil); err == nil {
 			i.mu.Lock()
 			i.Branch = branch
 			i.mu.Unlock()
 		}
-		stats = git.DiffUncommittedShortStat(i.Path)
+		stats = git.DiffUncommittedShortStat(i.Path, nil)
 	} else {
 		stats = i.getGitWorktree().DiffShortStat()
 	}
