@@ -43,7 +43,7 @@ func TestListRenderDimensions(t *testing.T) {
 	// Test a range of terminal widths that users commonly have.
 	for _, termWidth := range []int{80, 100, 120, 150, 160, 200, 240} {
 		termHeight := 40
-		listWidth := int(float32(termWidth) * 0.2)
+		listWidth := int(float32(termWidth) * ListWidthPercent)
 		paneWidth := termWidth - listWidth
 		contentHeight := termHeight - 2 // no tab bar
 

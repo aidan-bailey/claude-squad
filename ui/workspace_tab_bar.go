@@ -5,19 +5,16 @@ import (
 )
 
 var (
-	wsHighlightColor = lipgloss.AdaptiveColor{Light: "#874BFD", Dark: "#7D56F4"}
-	wsDimColor       = lipgloss.AdaptiveColor{Light: "#999999", Dark: "#555555"}
-
 	wsActiveTabStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder(), true).
-				BorderForeground(wsHighlightColor).
+				BorderForeground(BorderActive).
 				Bold(true).
-				Foreground(wsHighlightColor).
+				Foreground(BorderActive).
 				AlignHorizontal(lipgloss.Center)
 
 	wsInactiveTabStyle = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder(), true).
-				BorderForeground(wsDimColor).
+				BorderForeground(BorderMuted).
 				AlignHorizontal(lipgloss.Center)
 )
 

@@ -9,11 +9,11 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var highlightColor = lipgloss.AdaptiveColor{Light: "#874BFD", Dark: "#7D56F4"}
+var highlightColor = BorderActive
 
-// AdjustPreviewWidth adjusts the width of the preview pane to be 90% of the provided width.
+// AdjustPreviewWidth adjusts the width of the preview pane per PreviewWidthPercent.
 func AdjustPreviewWidth(width int) int {
-	return int(float64(width) * 0.9)
+	return int(float64(width) * PreviewWidthPercent)
 }
 
 const (
@@ -21,7 +21,7 @@ const (
 	FocusTerminal            // bottom pane
 )
 
-var dimBorderColor = lipgloss.AdaptiveColor{Light: "#999999", Dark: "#555555"}
+var dimBorderColor = BorderMuted
 
 var (
 	// paneBodyBorder renders left, right, bottom — top line is built manually with an inline title.
@@ -85,8 +85,7 @@ func (s *SplitPane) SetSize(width, height int) {
 	paneChrome := 2 * (1 + bodyBorderV) // 2 panes × (top line + bottom border)
 	availableHeight := height - paneChrome
 
-	// 70/30 split
-	agentHeight := int(float64(availableHeight) * 0.7)
+	agentHeight := int(float64(availableHeight) * SplitAgentPercent)
 	terminalHeight := availableHeight - agentHeight
 
 	s.agent.SetSize(contentWidth, agentHeight)

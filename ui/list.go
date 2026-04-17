@@ -38,11 +38,11 @@ var deletingStyle = lipgloss.NewStyle().
 
 var deletingTitleStyle = lipgloss.NewStyle().
 	Padding(1, 1, 0, 1).
-	Foreground(lipgloss.AdaptiveColor{Light: "#999999", Dark: "#666666"})
+	Foreground(TextDim)
 
 var deletingDescStyle = lipgloss.NewStyle().
 	Padding(0, 1, 1, 1).
-	Foreground(lipgloss.AdaptiveColor{Light: "#999999", Dark: "#666666"})
+	Foreground(TextDim)
 
 var workspaceTerminalStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#6c71c4", Dark: "#6c71c4"})
