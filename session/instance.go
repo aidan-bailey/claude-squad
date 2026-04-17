@@ -290,13 +290,7 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 }
 
 func (i *Instance) RepoName() (string, error) {
-	if i.IsWorkspaceTerminal {
-		return filepath.Base(i.Path), nil
-	}
-	if !i.isStarted() {
-		return "", fmt.Errorf("cannot get repo name for instance that has not been started")
-	}
-	return i.getGitWorktree().GetRepoName(), nil
+	return i.backend().RepoName()
 }
 
 // TransitionTo validates from→to against the state-machine allow-list and
@@ -650,14 +644,7 @@ func (i *Instance) GetGitWorktree() (*git.GitWorktree, error) {
 // GetWorktreePath returns the worktree path for the instance, or empty string if unavailable.
 // For workspace terminals, returns the root repo path.
 func (i *Instance) GetWorktreePath() string {
-	if i.IsWorkspaceTerminal {
-		return i.Path
-	}
-	gw := i.getGitWorktree()
-	if gw == nil {
-		return ""
-	}
-	return gw.GetWorktreePath()
+	return i.backend().WorkTreePath()
 }
 
 func (i *Instance) Started() bool {
@@ -864,45 +851,21 @@ func (i *Instance) CrashRestart() error {
 
 // UpdateDiffStats updates the git diff statistics for this instance
 func (i *Instance) UpdateDiffStats() error {
-	if !i.isStarted() {
-		i.setDiffStats(nil)
-		return nil
-	}
-
-	if i.GetStatus() == Paused {
-		// Keep the previous diff stats if the instance is paused
-		return nil
-	}
-
-	var stats *git.DiffStats
-	if i.IsWorkspaceTerminal {
-		// Refresh the current branch name for the root repo
-		if branch, err := git.CurrentBranch(i.Path, nil); err == nil {
-			i.mu.Lock()
-			i.Branch = branch
-			i.mu.Unlock()
-		}
-		stats = git.DiffUncommitted(i.Path, nil)
-	} else {
-		stats = i.getGitWorktree().Diff()
-	}
-	if stats.Error != nil {
-		if strings.Contains(stats.Error.Error(), "base commit SHA not set") {
-			// Worktree is not fully set up yet, not an error
-			i.setDiffStats(nil)
-			return nil
-		}
-		return fmt.Errorf("failed to get diff stats: %w", stats.Error)
-	}
-
-	i.setDiffStats(stats)
-	return nil
+	return i.updateDiffStats(SessionBackend.Diff)
 }
 
 // UpdateDiffStatsShort updates only the line counts (Added/Removed) without
 // fetching full diff content. Cheaper for non-selected instances that only
 // display counts in the list view.
 func (i *Instance) UpdateDiffStatsShort() error {
+	return i.updateDiffStats(SessionBackend.DiffShort)
+}
+
+// updateDiffStats is the shared body for UpdateDiffStats and
+// UpdateDiffStatsShort. The diffFn parameter selects which backend
+// method runs; everything else (paused guard, branch refresh,
+// base-commit error handling) is identical.
+func (i *Instance) updateDiffStats(diffFn func(SessionBackend) *git.DiffStats) error {
 	if !i.isStarted() {
 		i.setDiffStats(nil)
 		return nil
@@ -910,17 +873,15 @@ func (i *Instance) UpdateDiffStatsShort() error {
 	if i.GetStatus() == Paused {
 		return nil
 	}
-	var stats *git.DiffStats
-	if i.IsWorkspaceTerminal {
-		if branch, err := git.CurrentBranch(i.Path, nil); err == nil {
-			i.mu.Lock()
-			i.Branch = branch
-			i.mu.Unlock()
-		}
-		stats = git.DiffUncommittedShortStat(i.Path, nil)
-	} else {
-		stats = i.getGitWorktree().DiffShortStat()
+
+	b := i.backend()
+	if branch := b.RefreshBranch(); branch != "" {
+		i.mu.Lock()
+		i.Branch = branch
+		i.mu.Unlock()
 	}
+
+	stats := diffFn(b)
 	if stats.Error != nil {
 		if strings.Contains(stats.Error.Error(), "base commit SHA not set") {
 			i.setDiffStats(nil)
