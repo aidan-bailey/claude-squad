@@ -121,54 +121,66 @@ func (s *Storage) LoadAndReconcile(cmdExec cmd.Executor) ([]*Instance, error) {
 	return instances, nil
 }
 
-// DeleteInstance removes an instance from storage
+// DeleteInstance removes an instance from storage.
+// Operates on raw InstanceData so it does not construct live Instance objects
+// (which would open tmux attach PTYs for every remaining running instance).
 func (s *Storage) DeleteInstance(title string) error {
-	instances, err := s.LoadInstances()
+	data, err := s.LoadInstanceData()
 	if err != nil {
 		return fmt.Errorf("failed to load instances: %w", err)
 	}
 
 	found := false
-	newInstances := make([]*Instance, 0)
-	for _, instance := range instances {
-		data := instance.ToInstanceData()
-		if data.Title != title {
-			newInstances = append(newInstances, instance)
-		} else {
+	filtered := make([]InstanceData, 0, len(data))
+	for _, d := range data {
+		if d.Title == title {
 			found = true
+			continue
 		}
+		filtered = append(filtered, d)
 	}
 
 	if !found {
 		return fmt.Errorf("instance not found: %s", title)
 	}
 
-	return s.SaveInstances(newInstances)
+	return s.saveInstanceData(filtered)
 }
 
-// UpdateInstance updates an existing instance in storage
+// UpdateInstance replaces the persisted record for an existing instance.
+// Uses the in-memory snapshot of the provided instance and the raw-data
+// load path so the other stored entries are never reconstructed.
 func (s *Storage) UpdateInstance(instance *Instance) error {
-	instances, err := s.LoadInstances()
+	data, err := s.LoadInstanceData()
 	if err != nil {
 		return fmt.Errorf("failed to load instances: %w", err)
 	}
 
-	data := instance.ToInstanceData()
+	snap := instance.ToInstanceData()
 	found := false
-	for i, existing := range instances {
-		existingData := existing.ToInstanceData()
-		if existingData.Title == data.Title {
-			instances[i] = instance
+	for i, d := range data {
+		if d.Title == snap.Title {
+			data[i] = snap
 			found = true
 			break
 		}
 	}
 
 	if !found {
-		return fmt.Errorf("instance not found: %s", data.Title)
+		return fmt.Errorf("instance not found: %s", snap.Title)
 	}
 
-	return s.SaveInstances(instances)
+	return s.saveInstanceData(data)
+}
+
+// saveInstanceData marshals raw InstanceData and writes it through the
+// underlying state, bypassing the live-Instance serialization path.
+func (s *Storage) saveInstanceData(data []InstanceData) error {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("failed to marshal instances: %w", err)
+	}
+	return s.state.SaveInstances(jsonData)
 }
 
 // LoadInstanceData loads raw serialized instance data without constructing Instance objects.

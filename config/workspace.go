@@ -16,10 +16,12 @@ type Workspace struct {
 	AddedAt time.Time `json:"added_at"`
 }
 
-// WorkspaceRegistry holds all registered workspaces and tracks the last used one.
+// WorkspaceRegistry holds all registered workspaces, tracks the last-focused
+// one, and records the ordered list of open workspace tabs for restore.
 type WorkspaceRegistry struct {
-	Workspaces []Workspace `json:"workspaces"`
-	LastUsed   string      `json:"last_used"`
+	Workspaces     []Workspace `json:"workspaces"`
+	LastUsed       string      `json:"last_used"`
+	OpenWorkspaces []string    `json:"open_workspaces,omitempty"`
 }
 
 const workspacesFileName = "workspaces.json"
@@ -172,7 +174,19 @@ func (r *WorkspaceRegistry) Remove(name string) error {
 		r.LastUsed = ""
 	}
 
+	r.OpenWorkspaces = removeString(r.OpenWorkspaces, name)
+
 	return SaveWorkspaceRegistry(r)
+}
+
+func removeString(s []string, target string) []string {
+	out := s[:0]
+	for _, v := range s {
+		if v != target {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // FindByPath finds a workspace whose Path matches or is a parent of the given path.
@@ -225,6 +239,11 @@ func (r *WorkspaceRegistry) Rename(oldName, newName string) error {
 	if r.LastUsed == oldName {
 		r.LastUsed = newName
 	}
+	for i, n := range r.OpenWorkspaces {
+		if n == oldName {
+			r.OpenWorkspaces[i] = newName
+		}
+	}
 	return SaveWorkspaceRegistry(r)
 }
 
@@ -243,7 +262,37 @@ func WorkspaceConfigDir(ws *Workspace) string {
 	return filepath.Join(ws.Path, ".claude-squad")
 }
 
+// SetOpenWorkspaces replaces the ordered list of open workspace names and
+// persists the registry. Unknown names are silently dropped so the stored list
+// always references workspaces that still exist.
+func (r *WorkspaceRegistry) SetOpenWorkspaces(names []string) error {
+	filtered := make([]string, 0, len(names))
+	for _, n := range names {
+		if r.Get(n) != nil {
+			filtered = append(filtered, n)
+		}
+	}
+	r.OpenWorkspaces = filtered
+	return SaveWorkspaceRegistry(r)
+}
+
+// GetOpenWorkspaces returns the workspaces named in OpenWorkspaces, in order.
+// Names that no longer exist in the registry are skipped silently.
+func (r *WorkspaceRegistry) GetOpenWorkspaces() []Workspace {
+	out := make([]Workspace, 0, len(r.OpenWorkspaces))
+	for _, n := range r.OpenWorkspaces {
+		if ws := r.Get(n); ws != nil {
+			out = append(out, *ws)
+		}
+	}
+	return out
+}
+
 // EnsureGitignore ensures .claude-squad/ is listed in the repo's .gitignore.
+// Writes atomically via AtomicWriteFile so a crash or a concurrent call can't
+// leave a half-written entry behind. An O_APPEND-based write would issue two
+// syscalls (newline fixup, then entry), and racing callers each saw an absent
+// entry and each appended their own copy.
 func EnsureGitignore(repoPath string) error {
 	gitignorePath := filepath.Join(repoPath, ".gitignore")
 
@@ -255,31 +304,25 @@ func EnsureGitignore(repoPath string) error {
 		return fmt.Errorf("failed to read .gitignore: %w", err)
 	}
 
-	// Check if already present.
-	if err == nil {
-		lines := strings.Split(string(data), "\n")
-		for _, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			if trimmed == entry || trimmed == entry+"/" {
-				return nil // already present
-			}
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == entry || trimmed == entry+"/" {
+			return nil
 		}
 	}
 
-	// Append the entry.
-	f, err := os.OpenFile(gitignorePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open .gitignore: %w", err)
-	}
-	defer f.Close()
-
-	// Add a newline before comment if file has content and doesn't end with newline.
+	newContent := make([]byte, 0, len(data)+len(comment)+len(entry)+3)
+	newContent = append(newContent, data...)
 	if len(data) > 0 && data[len(data)-1] != '\n' {
-		if _, err := f.WriteString("\n"); err != nil {
-			return err
-		}
+		newContent = append(newContent, '\n')
 	}
+	newContent = append(newContent, comment...)
+	newContent = append(newContent, '\n')
+	newContent = append(newContent, entry...)
+	newContent = append(newContent, '\n')
 
-	_, err = f.WriteString(comment + "\n" + entry + "\n")
-	return err
+	if err := AtomicWriteFile(gitignorePath, newContent, 0644); err != nil {
+		return fmt.Errorf("failed to write .gitignore: %w", err)
+	}
+	return nil
 }

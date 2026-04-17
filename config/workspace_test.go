@@ -3,6 +3,8 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -230,6 +232,88 @@ func TestWorkspaceRegistryUpdateLastUsed(t *testing.T) {
 	assert.Equal(t, "ws1", loaded.LastUsed)
 }
 
+func TestSetOpenWorkspaces(t *testing.T) {
+	tempHome := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempHome)
+	defer os.Setenv("HOME", originalHome)
+
+	reg := &WorkspaceRegistry{
+		Workspaces: []Workspace{
+			{Name: "alpha", Path: "/a"},
+			{Name: "beta", Path: "/b"},
+		},
+	}
+	require.NoError(t, SaveWorkspaceRegistry(reg))
+
+	t.Run("persists ordered list and drops unknown names", func(t *testing.T) {
+		require.NoError(t, reg.SetOpenWorkspaces([]string{"beta", "ghost", "alpha"}))
+		assert.Equal(t, []string{"beta", "alpha"}, reg.OpenWorkspaces)
+
+		loaded, err := LoadWorkspaceRegistry()
+		require.NoError(t, err)
+		assert.Equal(t, []string{"beta", "alpha"}, loaded.OpenWorkspaces)
+	})
+
+	t.Run("empty list clears the field", func(t *testing.T) {
+		require.NoError(t, reg.SetOpenWorkspaces(nil))
+		assert.Empty(t, reg.OpenWorkspaces)
+	})
+}
+
+func TestGetOpenWorkspaces(t *testing.T) {
+	reg := &WorkspaceRegistry{
+		Workspaces: []Workspace{
+			{Name: "alpha", Path: "/a"},
+			{Name: "beta", Path: "/b"},
+		},
+		OpenWorkspaces: []string{"beta", "ghost", "alpha"},
+	}
+
+	open := reg.GetOpenWorkspaces()
+	require.Len(t, open, 2)
+	assert.Equal(t, "beta", open[0].Name)
+	assert.Equal(t, "alpha", open[1].Name)
+}
+
+func TestRemovePropagatesToOpenWorkspaces(t *testing.T) {
+	tempHome := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempHome)
+	defer os.Setenv("HOME", originalHome)
+
+	repo1 := t.TempDir()
+	repo2 := t.TempDir()
+	reg := &WorkspaceRegistry{}
+	require.NoError(t, reg.Add("alpha", repo1))
+	require.NoError(t, reg.Add("beta", repo2))
+	reg.OpenWorkspaces = []string{"alpha", "beta"}
+	require.NoError(t, SaveWorkspaceRegistry(reg))
+
+	require.NoError(t, reg.Remove("alpha"))
+	assert.Equal(t, []string{"beta"}, reg.OpenWorkspaces)
+
+	loaded, err := LoadWorkspaceRegistry()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"beta"}, loaded.OpenWorkspaces)
+}
+
+func TestRenamePropagatesToOpenWorkspaces(t *testing.T) {
+	tempHome := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempHome)
+	defer os.Setenv("HOME", originalHome)
+
+	repo1 := t.TempDir()
+	reg := &WorkspaceRegistry{}
+	require.NoError(t, reg.Add("alpha", repo1))
+	reg.OpenWorkspaces = []string{"alpha"}
+	require.NoError(t, SaveWorkspaceRegistry(reg))
+
+	require.NoError(t, reg.Rename("alpha", "alpha-renamed"))
+	assert.Equal(t, []string{"alpha-renamed"}, reg.OpenWorkspaces)
+}
+
 func TestWorkspaceConfigDir(t *testing.T) {
 	ws := &Workspace{Name: "test", Path: "/home/user/myrepo"}
 	assert.Equal(t, "/home/user/myrepo/.claude-squad", WorkspaceConfigDir(ws))
@@ -294,6 +378,61 @@ func TestEnsureGitignore(t *testing.T) {
 		content := string(data)
 		// The comment should start on its own line.
 		assert.Contains(t, content, "\n# claude-squad local data")
+	})
+
+	// Concurrent callers must not multiply the entry. The pre-fix code did
+	// ReadFile → check-absent → OpenFile(O_APPEND) → WriteString, so N
+	// racers each observed an absent entry and each appended their own
+	// copy. Atomic temp-file-plus-rename collapses this: the last rename
+	// wins and produces a single well-formed entry.
+	t.Run("concurrent invocations produce single entry", func(t *testing.T) {
+		repoDir := t.TempDir()
+
+		// Seed with a large-ish existing .gitignore so every goroutine spends
+		// non-trivial time in the read-and-check phase. Without this, the
+		// first caller creates and writes the file before any other caller
+		// even reaches ReadFile, and the race never surfaces.
+		var seed strings.Builder
+		for i := 0; i < 500; i++ {
+			seed.WriteString("seed-pattern-")
+			seed.WriteString(strings.Repeat("x", 40))
+			seed.WriteByte('\n')
+		}
+		require.NoError(t, os.WriteFile(
+			filepath.Join(repoDir, ".gitignore"),
+			[]byte(seed.String()),
+			0644,
+		))
+
+		const n = 50
+		release := make(chan struct{})
+		var done sync.WaitGroup
+		done.Add(n)
+		errs := make(chan error, n)
+		for i := 0; i < n; i++ {
+			go func() {
+				defer done.Done()
+				<-release
+				if err := EnsureGitignore(repoDir); err != nil {
+					errs <- err
+				}
+			}()
+		}
+		close(release) // broadcast: all N start together, maximizing contention
+		done.Wait()
+		close(errs)
+		for err := range errs {
+			assert.NoError(t, err)
+		}
+
+		data, err := os.ReadFile(filepath.Join(repoDir, ".gitignore"))
+		require.NoError(t, err)
+		content := string(data)
+
+		entryCount := strings.Count(content, ".claude-squad/")
+		commentCount := strings.Count(content, "# claude-squad local data")
+		assert.Equal(t, 1, entryCount, "entry should appear exactly once under concurrency; got: %q", content)
+		assert.Equal(t, 1, commentCount, "comment should appear exactly once under concurrency; got: %q", content)
 	})
 }
 
