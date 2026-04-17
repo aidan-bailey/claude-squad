@@ -695,9 +695,6 @@ func (i *Instance) Resume(saveState func() error) error {
 	if !i.isStarted() {
 		return fmt.Errorf("cannot resume instance that has not been started")
 	}
-	if i.GetStatus() != Paused {
-		return fmt.Errorf("can only resume paused instances")
-	}
 
 	gw := i.getGitWorktree()
 	ts := i.getTmuxSession()

@@ -1231,8 +1231,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if selected == nil || selected.IsWorkspaceTerminal {
 			return m, nil
 		}
-		previousStatus := selected.GetStatus()
-		if previousStatus == session.Loading || previousStatus == session.Deleting {
+		if selected.GetStatus() != session.Paused {
 			return m, nil
 		}
 		// Flip to Loading immediately so the list shows the spinner while
@@ -1244,7 +1243,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		resumeCmd := func() tea.Msg {
 			return resumeDoneMsg{
 				instance:       selected,
-				previousStatus: previousStatus,
+				previousStatus: session.Paused,
 				err:            selected.Resume(saveFunc),
 			}
 		}
