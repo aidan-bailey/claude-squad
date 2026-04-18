@@ -22,6 +22,7 @@ var (
 	version            = "1.0.17"
 	programFlag        string
 	autoYesFlag        bool
+	noScriptsFlag      bool
 	daemonFlag         bool
 	configDirFlag      string
 	workspaceFlag      string
@@ -162,7 +163,7 @@ var (
 				log.ErrorLog.Printf("failed to stop daemon: %v", err)
 			}
 
-			return app.Run(ctx, wsCtx, registry, cfg, program, autoYes, pendingDir)
+			return app.Run(ctx, wsCtx, registry, cfg, program, autoYes, pendingDir, noScriptsFlag)
 		},
 	}
 
@@ -265,6 +266,8 @@ func init() {
 		"Program to run in new instances (e.g. 'aider --model ollama_chat/gemma3:1b')")
 	rootCmd.Flags().BoolVarP(&autoYesFlag, "autoyes", "y", false,
 		"[experimental] If enabled, all instances will automatically accept prompts")
+	rootCmd.Flags().BoolVar(&noScriptsFlag, "no-scripts", false,
+		"Skip loading ~/.claude-squad/scripts (embedded defaults still load). Use to recover from a broken user script.")
 	rootCmd.Flags().StringVarP(&workspaceFlag, "workspace", "w", "",
 		"Select workspace by name (bypasses auto-detection)")
 	rootCmd.Flags().BoolVar(&daemonFlag, "daemon", false, "Run a program that loads all sessions"+

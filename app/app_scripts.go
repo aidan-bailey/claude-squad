@@ -2,7 +2,6 @@ package app
 
 import (
 	"claude-squad/config"
-	"claude-squad/keys"
 	"claude-squad/log"
 	"claude-squad/script"
 	"claude-squad/session"
@@ -188,31 +187,43 @@ func (s *scriptHost) drain() ([]*session.Instance, []string, []pendingIntent) {
 // scripts directory. Never fails startup: a missing dir or a broken
 // script is logged, not propagated.
 func initScripts(h *home) {
+	initScriptsIn(h, scriptsDir(), h.skipScripts)
+}
+
+// initScriptsIn is the testable core of initScripts. Callers (prod
+// and tests) supply the user-scripts directory explicitly, plus a
+// skipUser flag that lets --no-scripts load only the embedded
+// defaults. Defaults always load because they ship in the binary
+// and can't be corrupted by user state.
+func initScriptsIn(h *home, dir string, skipUser bool) {
 	if h.scripts != nil {
 		return
 	}
-	reserved := make(map[string]bool, len(keys.GlobalKeyStringsMap)+1)
-	for k := range keys.GlobalKeyStringsMap {
-		reserved[k] = true
-	}
-	// ctrl+q is advertised in the help panel as the attach-mode detach
-	// key but lives outside GlobalKeyStringsMap (it's handled in the
-	// attach overlay). Reserve it so scripts don't silently steal a
-	// key users expect to detach with.
-	reserved["ctrl+q"] = true
-	h.scripts = script.NewEngine(reserved)
+	h.scripts = script.NewEngine(buildReservedKeys())
 
 	// Defaults ship embedded in the binary, so they always load —
-	// even when the user has no scripts directory. User scripts run
-	// afterwards and can override any default via cs.unbind + cs.bind
-	// (or just cs.bind, which overwrites).
+	// even when --no-scripts is set or the user has no scripts
+	// directory. User scripts run afterwards and can override any
+	// default via cs.unbind + cs.bind (or just cs.bind, which
+	// overwrites).
 	h.scripts.LoadDefaults()
 
-	dir := scriptsDir()
-	if dir == "" {
+	if skipUser || dir == "" {
 		return
 	}
 	h.scripts.Load(dir)
+}
+
+// buildReservedKeys is the hard-reserve list the engine uses to
+// reject cs.bind/cs.unbind calls. ctrl+c is the panic-exit backstop;
+// ctrl+q is the attach-overlay detach key that lives outside any
+// dispatch registry. Task 15 narrows this to just ctrl+c once the
+// user-facing keymap becomes fully Lua-owned.
+func buildReservedKeys() map[string]bool {
+	return map[string]bool{
+		"ctrl+c": true,
+		"ctrl+q": true,
+	}
 }
 
 // scriptsDir resolves the global scripts directory. Per plan

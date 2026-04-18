@@ -38,9 +38,11 @@ var statusLineStyle = lipgloss.NewStyle().
 // wsCtx is the resolved workspace context; nil means global.
 // registry is passed through for the startup workspace picker.
 // appConfig is the pre-loaded config from the resolved workspace directory.
-func Run(ctx context.Context, wsCtx *config.WorkspaceContext, registry *config.WorkspaceRegistry, appConfig *config.Config, program string, autoYes bool, pendingDir string) error {
+// noScripts disables loading of ~/.claude-squad/scripts (embedded
+// defaults still load).
+func Run(ctx context.Context, wsCtx *config.WorkspaceContext, registry *config.WorkspaceRegistry, appConfig *config.Config, program string, autoYes bool, pendingDir string, noScripts bool) error {
 	p := tea.NewProgram(
-		newHome(ctx, wsCtx, registry, appConfig, program, autoYes, pendingDir),
+		newHome(ctx, wsCtx, registry, appConfig, program, autoYes, pendingDir, noScripts),
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(), // Mouse scroll
 	)
@@ -186,9 +188,14 @@ type home struct {
 	// nil in normal operation (a failed load still produces an empty
 	// engine so Dispatch returns matched=false instead of panicking).
 	scripts *script.Engine
+	// skipScripts mirrors the --no-scripts CLI flag: when true, the
+	// engine still boots with embedded defaults, but ~/.claude-squad/
+	// scripts is skipped. Provides an escape hatch when a user script
+	// broke the keymap.
+	skipScripts bool
 }
 
-func newHome(ctx context.Context, wsCtx *config.WorkspaceContext, registry *config.WorkspaceRegistry, appConfig *config.Config, program string, autoYes bool, pendingDir string) *home {
+func newHome(ctx context.Context, wsCtx *config.WorkspaceContext, registry *config.WorkspaceRegistry, appConfig *config.Config, program string, autoYes bool, pendingDir string, noScripts bool) *home {
 	cfgDir := ""
 	if wsCtx != nil {
 		cfgDir = wsCtx.ConfigDir
@@ -203,21 +210,22 @@ func newHome(ctx context.Context, wsCtx *config.WorkspaceContext, registry *conf
 	}
 
 	h := &home{
-		ctx:       ctx,
-		actions:   defaultActions(),
-		activeCtx: wsCtx,
-		registry:  registry,
-		spinner:   spinner.New(spinner.WithSpinner(spinner.MiniDot)),
-		menu:      ui.NewMenu(),
-		splitPane: ui.NewSplitPane(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
-		errBox:    ui.NewErrBox(),
-		storage:   storage,
-		appConfig: appConfig,
-		program:   program,
-		autoYes:   autoYes,
-		state:     stateDefault,
-		appState:  appState,
-		tabBar:    ui.NewWorkspaceTabBar(),
+		ctx:         ctx,
+		actions:     defaultActions(),
+		activeCtx:   wsCtx,
+		registry:    registry,
+		spinner:     spinner.New(spinner.WithSpinner(spinner.MiniDot)),
+		menu:        ui.NewMenu(),
+		splitPane:   ui.NewSplitPane(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
+		errBox:      ui.NewErrBox(),
+		storage:     storage,
+		appConfig:   appConfig,
+		program:     program,
+		autoYes:     autoYes,
+		state:       stateDefault,
+		appState:    appState,
+		tabBar:      ui.NewWorkspaceTabBar(),
+		skipScripts: noScripts,
 	}
 	h.list = ui.NewList(&h.spinner, autoYes)
 	if wsCtx != nil && wsCtx.Name != "" {
