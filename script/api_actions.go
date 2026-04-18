@@ -123,6 +123,25 @@ func installDeferredActions(L *lua.LState, e *Engine, actions *lua.LTable) {
 	actions.RawSetString("open_workspace_picker", L.NewFunction(func(L *lua.LState) int {
 		return enqueue(L, WorkspacePickerIntent{})
 	}))
+
+	actions.RawSetString("inline_attach_agent", L.NewFunction(func(L *lua.LState) int {
+		return enqueue(L, InlineAttachIntent{Pane: AttachPaneAgent})
+	}))
+	actions.RawSetString("inline_attach_terminal", L.NewFunction(func(L *lua.LState) int {
+		return enqueue(L, InlineAttachIntent{Pane: AttachPaneTerminal})
+	}))
+	actions.RawSetString("fullscreen_attach_agent", L.NewFunction(func(L *lua.LState) int {
+		return enqueue(L, FullscreenAttachIntent{Pane: AttachPaneAgent})
+	}))
+	actions.RawSetString("fullscreen_attach_terminal", L.NewFunction(func(L *lua.LState) int {
+		return enqueue(L, FullscreenAttachIntent{Pane: AttachPaneTerminal})
+	}))
+	actions.RawSetString("quick_input_agent", L.NewFunction(func(L *lua.LState) int {
+		return enqueue(L, QuickInputIntent{Pane: AttachPaneAgent})
+	}))
+	actions.RawSetString("quick_input_terminal", L.NewFunction(func(L *lua.LState) int {
+		return enqueue(L, QuickInputIntent{Pane: AttachPaneTerminal})
+	}))
 }
 
 // optBool reads a boolean field from the single table argument at

@@ -186,6 +186,63 @@ func TestCsActionsOpenWorkspacePickerEnqueues(t *testing.T) {
 	assert.True(t, ok)
 }
 
+func TestCsActionsInlineAttachPanes(t *testing.T) {
+	e := NewEngine(nil)
+	defer e.Close()
+	e.BeginLoad("t.lua")
+	require.NoError(t, e.L.DoString(`
+		cs.bind("a", function() cs.actions.inline_attach_agent() end)
+		cs.bind("t", function() cs.actions.inline_attach_terminal() end)
+	`))
+	e.EndLoad()
+
+	h := dispatchExpectYield(t, e, "a")
+	agent := h.enqueued[0].(InlineAttachIntent)
+	assert.Equal(t, AttachPaneAgent, agent.Pane)
+
+	h = dispatchExpectYield(t, e, "t")
+	term := h.enqueued[0].(InlineAttachIntent)
+	assert.Equal(t, AttachPaneTerminal, term.Pane)
+}
+
+func TestCsActionsFullscreenAttachPanes(t *testing.T) {
+	e := NewEngine(nil)
+	defer e.Close()
+	e.BeginLoad("t.lua")
+	require.NoError(t, e.L.DoString(`
+		cs.bind("A", function() cs.actions.fullscreen_attach_agent() end)
+		cs.bind("T", function() cs.actions.fullscreen_attach_terminal() end)
+	`))
+	e.EndLoad()
+
+	h := dispatchExpectYield(t, e, "A")
+	agent := h.enqueued[0].(FullscreenAttachIntent)
+	assert.Equal(t, AttachPaneAgent, agent.Pane)
+
+	h = dispatchExpectYield(t, e, "T")
+	term := h.enqueued[0].(FullscreenAttachIntent)
+	assert.Equal(t, AttachPaneTerminal, term.Pane)
+}
+
+func TestCsActionsQuickInputPanes(t *testing.T) {
+	e := NewEngine(nil)
+	defer e.Close()
+	e.BeginLoad("t.lua")
+	require.NoError(t, e.L.DoString(`
+		cs.bind("a", function() cs.actions.quick_input_agent() end)
+		cs.bind("t", function() cs.actions.quick_input_terminal() end)
+	`))
+	e.EndLoad()
+
+	h := dispatchExpectYield(t, e, "a")
+	agent := h.enqueued[0].(QuickInputIntent)
+	assert.Equal(t, AttachPaneAgent, agent.Pane)
+
+	h = dispatchExpectYield(t, e, "t")
+	term := h.enqueued[0].(QuickInputIntent)
+	assert.Equal(t, AttachPaneTerminal, term.Pane)
+}
+
 func TestCsActionsSyncPrimitivesCallHost(t *testing.T) {
 	e := NewEngine(nil)
 	defer e.Close()
