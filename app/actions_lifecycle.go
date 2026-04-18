@@ -87,18 +87,38 @@ func runNewInstance(m *home) (tea.Model, tea.Cmd) {
 
 func runKillSelected(m *home) (tea.Model, tea.Cmd) {
 	selected := m.list.GetSelectedInstance()
+	preAction, killAction := killActionFor(m, selected)
+	message := fmt.Sprintf("[!] Kill session '%s'?", selected.Title)
+	return m, m.confirmTask(message, overlay.ConfirmationTask{
+		Sync:  preAction,
+		Async: killAction,
+	})
+}
+
+// runKillSelectedNoConfirm mirrors runKillSelected but skips the
+// confirmation overlay, running preAction inline before returning
+// killAction. Used by cs.actions.kill_selected{confirm=false}.
+func runKillSelectedNoConfirm(m *home) (tea.Model, tea.Cmd) {
+	selected := m.list.GetSelectedInstance()
+	preAction, killAction := killActionFor(m, selected)
+	preAction()
+	return m, killAction
+}
+
+// killActionFor returns the (synchronous pre-step, async body) pair
+// that both runKillSelected variants share. preAction flips the
+// instance to Deleting; killAction handles I/O off the update
+// goroutine and returns the appropriate tea.Msg on completion.
+func killActionFor(m *home, selected *session.Instance) (func(), tea.Cmd) {
 	previousStatus := selected.GetStatus()
 	title := selected.Title
 
-	// preAction runs synchronously in the main goroutine when the user
-	// confirms. It marks the instance as Deleting immediately.
 	preAction := func() {
 		if err := selected.TransitionTo(session.Deleting); err != nil {
 			log.WarningLog.Printf("kill preAction transition: %v", err)
 		}
 	}
 
-	// killAction runs in a goroutine — only I/O, no state mutations.
 	killAction := func() tea.Msg {
 		worktree, err := selected.GetGitWorktree()
 		if err != nil {
@@ -119,8 +139,6 @@ func runKillSelected(m *home) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Close the cached terminal-pane tmux session. DetachTerminalForInstance
-		// is pure state; the blocking Close() runs here, off the update goroutine.
 		if ts := m.splitPane.DetachTerminalForInstance(title); ts != nil {
 			if err := ts.Close(); err != nil {
 				log.ErrorLog.Printf("terminal pane: failed to close session for %s: %v", title, err)
@@ -138,17 +156,25 @@ func runKillSelected(m *home) (tea.Model, tea.Cmd) {
 		return killInstanceMsg{title: title}
 	}
 
-	message := fmt.Sprintf("[!] Kill session '%s'?", selected.Title)
-	return m, m.confirmTask(message, overlay.ConfirmationTask{
-		Sync:  preAction,
-		Async: killAction,
-	})
+	return preAction, killAction
 }
 
 func runSubmitSelected(m *home) (tea.Model, tea.Cmd) {
 	selected := m.list.GetSelectedInstance()
+	pushAction := pushActionFor(selected)
+	message := fmt.Sprintf("[!] Push changes from session '%s'?", selected.Title)
+	return m, m.confirmAction(message, pushAction)
+}
 
-	pushAction := func() tea.Msg {
+// runSubmitSelectedNoConfirm mirrors runSubmitSelected but skips the
+// confirmation overlay. Used by cs.actions.push_selected{confirm=false}.
+func runSubmitSelectedNoConfirm(m *home) (tea.Model, tea.Cmd) {
+	selected := m.list.GetSelectedInstance()
+	return m, pushActionFor(selected)
+}
+
+func pushActionFor(selected *session.Instance) tea.Cmd {
+	return func() tea.Msg {
 		commitMsg := fmt.Sprintf("[claudesquad] update from '%s' on %s", selected.Title, time.Now().Format(time.RFC822))
 		worktree, err := selected.GetGitWorktree()
 		if err != nil {
@@ -159,19 +185,50 @@ func runSubmitSelected(m *home) (tea.Model, tea.Cmd) {
 		}
 		return nil
 	}
-
-	message := fmt.Sprintf("[!] Push changes from session '%s'?", selected.Title)
-	return m, m.confirmAction(message, pushAction)
 }
 
 func runCheckoutSelected(m *home) (tea.Model, tea.Cmd) {
+	return runCheckoutSelectedOpts(m, true, true)
+}
+
+// runCheckoutSelectedOpts is the parameterized pause path. confirm
+// gates the confirmation overlay; help gates the prerequisite help
+// screen. Script callers use cs.actions.checkout_selected{confirm=,
+// help=} to tune either; the legacy keymap always passes both true.
+// Combinations that skip the confirm still trigger the Loading
+// transition synchronously so the spinner renders immediately.
+func runCheckoutSelectedOpts(m *home, confirm, help bool) (tea.Model, tea.Cmd) {
 	selected := m.list.GetSelectedInstance()
+	pauseAction := pauseActionFor(m, selected)
+
+	startPause := func() tea.Cmd {
+		if !confirm {
+			if err := selected.TransitionTo(session.Loading); err != nil {
+				log.WarningLog.Printf("pause preAction transition: %v", err)
+			}
+			return pauseAction
+		}
+		message := fmt.Sprintf("[!] Pause session '%s'?", selected.Title)
+		return m.confirmTask(message, overlay.ConfirmationTask{
+			Sync: func() {
+				if err := selected.TransitionTo(session.Loading); err != nil {
+					log.WarningLog.Printf("pause preAction transition: %v", err)
+				}
+			},
+			Async: pauseAction,
+		})
+	}
+
+	if help {
+		return m.showHelpScreen(helpTypeInstanceCheckout{}, startPause)
+	}
+	return m, startPause()
+}
+
+func pauseActionFor(m *home, selected *session.Instance) tea.Cmd {
 	previousStatus := selected.GetStatus()
 	pauseTitle := selected.Title
-
-	pauseAction := func() tea.Msg {
-		// Close the cached terminal-pane tmux session off the update goroutine
-		// so subprocess I/O can't stall the UI.
+	return func() tea.Msg {
 		if ts := m.splitPane.DetachTerminalForInstance(pauseTitle); ts != nil {
 			if err := ts.Close(); err != nil {
 				log.ErrorLog.Printf("terminal pane: failed to close session for %s: %v", pauseTitle, err)
@@ -185,21 +242,6 @@ func runCheckoutSelected(m *home) (tea.Model, tea.Cmd) {
 		}
 		return pauseInstanceMsg{title: pauseTitle}
 	}
-
-	// Show help screen before confirming pause. Once the user confirms,
-	// flip to Loading synchronously so the spinner renders immediately
-	// while the blocking commit/tmux/worktree work runs in pauseAction.
-	return m.showHelpScreen(helpTypeInstanceCheckout{}, func() tea.Cmd {
-		message := fmt.Sprintf("[!] Pause session '%s'?", selected.Title)
-		return m.confirmTask(message, overlay.ConfirmationTask{
-			Sync: func() {
-				if err := selected.TransitionTo(session.Loading); err != nil {
-					log.WarningLog.Printf("pause preAction transition: %v", err)
-				}
-			},
-			Async: pauseAction,
-		})
-	})
 }
 
 func runResumeSelected(m *home) (tea.Model, tea.Cmd) {

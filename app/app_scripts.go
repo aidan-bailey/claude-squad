@@ -253,6 +253,73 @@ func (m *home) dispatchScript(key string) (tea.Cmd, bool) {
 	}, true
 }
 
+// handleScriptIntent routes a yielded Intent to its legacy runXYZ
+// handler and batches a scriptResumeMsg so the awaiting Lua coroutine
+// unblocks. The resume fires as soon as the intent dispatches rather
+// than after any confirmation overlay closes — scripts that need to
+// observe user confirmation must arrange their own signal path. Quit
+// is exempt because tea.Quit ends the program before resume could
+// matter.
+func (m *home) handleScriptIntent(p pendingIntent) tea.Cmd {
+	var cmd tea.Cmd
+	switch i := p.intent.(type) {
+	case script.QuitIntent:
+		return tea.Quit
+	case script.PushSelectedIntent:
+		if i.Confirm {
+			_, cmd = runSubmitSelected(m)
+		} else {
+			_, cmd = runSubmitSelectedNoConfirm(m)
+		}
+	case script.KillSelectedIntent:
+		if i.Confirm {
+			_, cmd = runKillSelected(m)
+		} else {
+			_, cmd = runKillSelectedNoConfirm(m)
+		}
+	case script.CheckoutIntent:
+		_, cmd = runCheckoutSelectedOpts(m, i.Confirm, i.Help)
+	case script.ResumeIntent:
+		_, cmd = runResumeSelected(m)
+	case script.NewInstanceIntent:
+		// Title pre-fill is not yet wired through the overlay; for now
+		// the field is accepted but ignored. Follow-up can plumb a
+		// pre-filled list entry through runNewInstance.
+		if i.Prompt {
+			_, cmd = runPromptNewInstance(m)
+		} else {
+			_, cmd = runNewInstance(m)
+		}
+	case script.ShowHelpIntent:
+		_, cmd = runShowHelp(m)
+	case script.WorkspacePickerIntent:
+		_, cmd = runOpenWorkspacePicker(m)
+	case script.InlineAttachIntent:
+		if i.Pane == script.AttachPaneTerminal {
+			_, cmd = runInlineAttachTerminal(m)
+		} else {
+			_, cmd = runInlineAttachAgent(m)
+		}
+	case script.FullscreenAttachIntent:
+		if i.Pane == script.AttachPaneTerminal {
+			_, cmd = runFullScreenAttachTerminal(m)
+		} else {
+			_, cmd = runFullScreenAttachAgent(m)
+		}
+	case script.QuickInputIntent:
+		if i.Pane == script.AttachPaneTerminal {
+			_, cmd = runQuickInputTerminal(m)
+		} else {
+			_, cmd = runQuickInputAgent(m)
+		}
+	}
+	resumeCmd := func() tea.Msg { return scriptResumeMsg{id: p.id} }
+	if cmd == nil {
+		return resumeCmd
+	}
+	return tea.Batch(cmd, resumeCmd)
+}
+
 // handleScriptResume wakes the suspended handler coroutine keyed by
 // msg.id. A fresh scriptHost is allocated per resume so any intents
 // the resumed coroutine enqueues on its way to the next yield are
@@ -299,6 +366,15 @@ func (m *home) handleScriptDone(msg scriptDoneMsg) tea.Cmd {
 	}
 	if len(msg.pendingInstances) > 0 {
 		cmds = append(cmds, m.instanceChanged())
+	}
+	// Dispatch any yielded intents. handleScriptIntent mutates state
+	// synchronously (opens overlays, flips m.state, etc.) and returns a
+	// Cmd that batches the intent's side-effect Cmd with a resume
+	// message for the awaiting coroutine.
+	for _, p := range msg.pendingIntents {
+		if c := m.handleScriptIntent(p); c != nil {
+			cmds = append(cmds, c)
+		}
 	}
 	if len(cmds) == 0 {
 		return nil

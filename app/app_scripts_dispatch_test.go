@@ -1,0 +1,247 @@
+package app
+
+import (
+	"testing"
+
+	"claude-squad/config"
+	"claude-squad/script"
+	"claude-squad/session"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// homeWithAppState augments newTestHome with the appState dependency
+// needed by intents that funnel through showHelpScreen (checkout,
+// fullscreen_attach, show_help). Kept local to this file so other
+// tests keep their minimal fixture.
+func homeWithAppState(t *testing.T) *home {
+	t.Helper()
+	h := newTestHome(t)
+	h.appState = config.DefaultState()
+	return h
+}
+
+// addReadyInstance attaches a Running instance so preconditions-gated
+// intents (push/kill/checkout/attach/quick_input) have a valid
+// selection.
+func addReadyInstance(t *testing.T, h *home) *session.Instance {
+	t.Helper()
+	inst, err := session.NewInstance(session.InstanceOptions{
+		Title:   "a",
+		Path:    t.TempDir(),
+		Program: "claude",
+	})
+	require.NoError(t, err)
+	_ = h.list.AddInstance(inst)
+	require.NoError(t, inst.TransitionTo(session.Running))
+	return inst
+}
+
+func TestHandleScriptIntentQuit(t *testing.T) {
+	m := newTestHome(t)
+	cmd := m.handleScriptIntent(pendingIntent{
+		id:     script.NewIntentID(),
+		intent: script.QuitIntent{},
+	})
+	require.NotNil(t, cmd)
+	// tea.Quit is a function that returns tea.QuitMsg when invoked.
+	msg := cmd()
+	_, ok := msg.(tea.QuitMsg)
+	assert.True(t, ok, "QuitIntent should produce tea.QuitMsg")
+}
+
+func TestHandleScriptIntentPushSelectedConfirm(t *testing.T) {
+	m := homeWithAppState(t)
+	addReadyInstance(t, m)
+
+	m.handleScriptIntent(pendingIntent{
+		id:     script.NewIntentID(),
+		intent: script.PushSelectedIntent{Confirm: true},
+	})
+	assert.Equal(t, stateConfirm, m.state, "confirm=true opens confirmation overlay")
+}
+
+func TestHandleScriptIntentPushSelectedNoConfirm(t *testing.T) {
+	m := homeWithAppState(t)
+	addReadyInstance(t, m)
+
+	cmd := m.handleScriptIntent(pendingIntent{
+		id:     script.NewIntentID(),
+		intent: script.PushSelectedIntent{Confirm: false},
+	})
+	assert.NotEqual(t, stateConfirm, m.state, "confirm=false skips overlay")
+	require.NotNil(t, cmd, "no-confirm push still enqueues push Cmd")
+}
+
+func TestHandleScriptIntentKillSelectedConfirm(t *testing.T) {
+	m := homeWithAppState(t)
+	addReadyInstance(t, m)
+
+	m.handleScriptIntent(pendingIntent{
+		id:     script.NewIntentID(),
+		intent: script.KillSelectedIntent{Confirm: true},
+	})
+	assert.Equal(t, stateConfirm, m.state)
+}
+
+func TestHandleScriptIntentKillSelectedNoConfirm(t *testing.T) {
+	m := homeWithAppState(t)
+	addReadyInstance(t, m)
+
+	cmd := m.handleScriptIntent(pendingIntent{
+		id:     script.NewIntentID(),
+		intent: script.KillSelectedIntent{Confirm: false},
+	})
+	assert.NotEqual(t, stateConfirm, m.state)
+	require.NotNil(t, cmd)
+}
+
+func TestHandleScriptIntentCheckout(t *testing.T) {
+	m := homeWithAppState(t)
+	addReadyInstance(t, m)
+
+	m.handleScriptIntent(pendingIntent{
+		id:     script.NewIntentID(),
+		intent: script.CheckoutIntent{Confirm: true, Help: true},
+	})
+	// help=true opens the help screen first (unseen flag).
+	assert.Equal(t, stateHelp, m.state)
+}
+
+func TestHandleScriptIntentResume(t *testing.T) {
+	m := homeWithAppState(t)
+	inst := addReadyInstance(t, m)
+	// Resume only transitions from Paused.
+	require.NoError(t, inst.TransitionTo(session.Paused))
+
+	m.handleScriptIntent(pendingIntent{
+		id:     script.NewIntentID(),
+		intent: script.ResumeIntent{},
+	})
+	assert.Equal(t, session.Loading, inst.GetStatus(), "resume flips selected to Loading")
+}
+
+func TestHandleScriptIntentNewInstance(t *testing.T) {
+	m := newTestHome(t)
+
+	m.handleScriptIntent(pendingIntent{
+		id:     script.NewIntentID(),
+		intent: script.NewInstanceIntent{Prompt: false},
+	})
+	assert.Equal(t, stateNew, m.state)
+}
+
+func TestHandleScriptIntentNewInstancePrompt(t *testing.T) {
+	m := newTestHome(t)
+
+	m.handleScriptIntent(pendingIntent{
+		id:     script.NewIntentID(),
+		intent: script.NewInstanceIntent{Prompt: true},
+	})
+	assert.Equal(t, stateNew, m.state)
+	assert.True(t, m.promptAfterName)
+}
+
+func TestHandleScriptIntentShowHelp(t *testing.T) {
+	m := homeWithAppState(t)
+
+	m.handleScriptIntent(pendingIntent{
+		id:     script.NewIntentID(),
+		intent: script.ShowHelpIntent{},
+	})
+	assert.Equal(t, stateHelp, m.state)
+}
+
+func TestHandleScriptIntentInlineAttach(t *testing.T) {
+	cases := []struct {
+		name string
+		pane script.AttachPane
+	}{
+		{"agent", script.AttachPaneAgent},
+		{"terminal", script.AttachPaneTerminal},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := homeWithAppState(t)
+			addReadyInstance(t, m)
+
+			m.handleScriptIntent(pendingIntent{
+				id:     script.NewIntentID(),
+				intent: script.InlineAttachIntent{Pane: tc.pane},
+			})
+			assert.Equal(t, stateInlineAttach, m.state)
+		})
+	}
+}
+
+func TestHandleScriptIntentFullscreenAttach(t *testing.T) {
+	m := homeWithAppState(t)
+	addReadyInstance(t, m)
+
+	m.handleScriptIntent(pendingIntent{
+		id:     script.NewIntentID(),
+		intent: script.FullscreenAttachIntent{Pane: script.AttachPaneAgent},
+	})
+	// Help screen opens first (unseen attach-help flag).
+	assert.Equal(t, stateHelp, m.state)
+}
+
+func TestHandleScriptIntentQuickInput(t *testing.T) {
+	cases := []struct {
+		name string
+		pane script.AttachPane
+	}{
+		{"agent", script.AttachPaneAgent},
+		{"terminal", script.AttachPaneTerminal},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestHome(t)
+			addReadyInstance(t, m)
+
+			m.handleScriptIntent(pendingIntent{
+				id:     script.NewIntentID(),
+				intent: script.QuickInputIntent{Pane: tc.pane},
+			})
+			assert.Equal(t, stateQuickInteract, m.state)
+		})
+	}
+}
+
+// TestHandleScriptIntentResumeMessageEmitted verifies every non-Quit
+// intent batches a scriptResumeMsg so the awaiting coroutine unblocks.
+// Quit is exempt because tea.Quit ends the program.
+func TestHandleScriptIntentResumeMessageEmitted(t *testing.T) {
+	m := homeWithAppState(t)
+	addReadyInstance(t, m)
+	id := script.NewIntentID()
+
+	cmd := m.handleScriptIntent(pendingIntent{
+		id:     id,
+		intent: script.ShowHelpIntent{},
+	})
+	require.NotNil(t, cmd)
+
+	// Drain the batch and look for the resume message. tea.Batch returns
+	// a BatchMsg slice of Cmds; walk them and fire each to inspect.
+	msg := cmd()
+	foundResume := false
+	assertResume := func(m tea.Msg) {
+		if rm, ok := m.(scriptResumeMsg); ok && rm.id == id {
+			foundResume = true
+		}
+	}
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, sub := range batch {
+			if sub == nil {
+				continue
+			}
+			assertResume(sub())
+		}
+	} else {
+		assertResume(msg)
+	}
+	assert.True(t, foundResume, "expected scriptResumeMsg in batch")
+}
