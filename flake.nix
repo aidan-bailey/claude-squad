@@ -30,7 +30,9 @@
             inherit version;
             src = ./.;
 
-            vendorHash = "sha256-KW6IZRw2BEfmRKVqRh2w4X2+RIiWdGK9SWnUIgXmKEs=";
+            # vendor/ is committed in-tree; use it directly rather than
+            # re-deriving from go.sum through a fixed-output derivation.
+            vendorHash = null;
 
             env.CGO_ENABLED = "0";
 
