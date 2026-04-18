@@ -1,27 +1,33 @@
 # Scripting
 
-Claude Squad ships an embedded Lua runtime that lets users bind custom keys in the TUI to user-authored actions. Scripts live in `~/.claude-squad/scripts/`, are loaded at startup, and are dispatched after the built-in keymap misses. The runtime is sandboxed and single-threaded.
+Claude Squad ships an embedded Lua runtime that owns the entire default-state keymap. The stock hotkeys (`n`, `D`, `p`, `c`, `r`, `?`, `q`, arrow keys, workspace nav, attach/quick-input, etc.) live in `script/defaults.lua`, baked into the binary via `go:embed` and loaded before any user script. Users author additional bindings or replacement defaults in `~/.claude-squad/scripts/*.lua`; those load after defaults and can override any binding except `ctrl+c` (panic-exit backstop). The runtime is a hard allow-list sandbox and is single-threaded under a mutex.
 
 The implementation is Lua 5.1 via [`github.com/yuin/gopher-lua`](https://github.com/yuin/gopher-lua), vendored in `vendor/github.com/yuin/gopher-lua`.
+
+## Canonical keymap
+
+`script/defaults.lua` is the source of truth for the stock keymap. Every built-in hotkey is declared there as a `cs.bind` call. Reading that file is the fastest way to see exactly what keys do what — the [TUI Keybindings table in CLAUDE.md](../../CLAUDE.md) is a human-friendly summary, not the specification.
 
 ## Concepts
 
 ### Engine
 
-A single `gopher-lua` state plus the registered action table. One `Engine` lives for the lifetime of the app, owned by the `*home` model.
+A single `gopher-lua` state plus the bound-action table. One `Engine` lives for the lifetime of the app, owned by the `*home` model.
 
 ```go
 // script/engine.go
 type Engine struct {
-    mu       sync.Mutex
-    L        *lua.LState
-    actions  map[string]*scriptAction
-    order    []string        // insertion order for Registrations()
-    loading  bool            // true only inside Load()
-    curFile  string          // script file currently being compiled
-    reserved map[string]bool // raw key strings owned by built-ins
-    curHost  Host            // Host active for the current dispatch
-    logs     []LogEntry      // buffered ctx:log / cs.log output
+    mu           sync.Mutex
+    L            *lua.LState
+    actions      map[string]*scriptAction
+    order        []string        // insertion order for Registrations()
+    loading      bool            // true only inside Load()/LoadDefaults()
+    curFile      string          // script file currently being compiled
+    reserved     map[string]bool // raw key strings owned by built-ins
+    curHost      Host            // Host active for the current dispatch
+    lastEnqueued IntentID        // most recent intent id for bare cs.await()
+    pending      map[IntentID]*lua.LState // parked coroutines awaiting a resume
+    logs         []LogEntry      // buffered ctx:log / cs.log output
 }
 ```
 
@@ -29,11 +35,12 @@ type Engine struct {
 
 ### Host
 
-An interface implemented by `app/app_scripts.go#scriptHost` that lets the engine touch live TUI state without importing `app/` (which would be a cycle).
+An interface implemented by `app/app_scripts.go#scriptHost` that lets the engine touch live TUI state without importing `app/` (which would be a cycle). It carries the sync primitives (cursor movement, diff toggle, workspace switching) plus the `Enqueue(Intent) IntentID` method that powers deferred actions.
 
 ```go
 // script/host.go
 type Host interface {
+    // Queries
     SelectedInstance() *session.Instance
     Instances() []*session.Instance
     Workspaces() *config.WorkspaceRegistry
@@ -41,16 +48,28 @@ type Host interface {
     RepoPath() string
     DefaultProgram() string
     BranchPrefix() string
+
+    // Side-effects
     QueueInstance(inst *session.Instance)
     Notify(msg string)
+
+    // Sync primitives (immediate)
+    CursorUp()
+    CursorDown()
+    ToggleDiff()
+    WorkspacePrev()
+    WorkspaceNext()
+
+    // Deferred primitives — returns an id the script can cs.await()
+    Enqueue(intent Intent) IntentID
 }
 ```
 
-A fresh `scriptHost` is allocated per dispatch so pending instances and notices from one script can't leak into another.
+A fresh `scriptHost` is allocated per dispatch so pending instances, notices, and enqueued intents from one script can't leak into another.
 
 ### Script Action
 
-The unit of registration: a key binding plus optional precondition and required run function.
+The unit of registration: a key binding plus a handler function (and optional `help` text / `precondition` for `cs.register_action`).
 
 ```go
 // script/engine.go
@@ -58,32 +77,27 @@ type scriptAction struct {
     key          string
     help         string
     file         string // source file, cited in error logs
-    precondition *lua.LFunction
+    precondition *lua.LFunction // register_action path only
     run          *lua.LFunction
 }
 ```
 
 ### Context (`ctx`)
 
-A userdata value handed to `precondition` and `run` on every dispatch. Lives for the duration of a single call, then is discarded.
+A userdata value handed to handlers. Lives for the duration of a single call, then is discarded. `ctx` exposes methods that forward to the `Host` interface.
 
 ```lua
-cs.register_action{
-  key = "ctrl+shift+p",
-  run = function(ctx)
-    local inst = ctx:selected()
-    if inst then
-      ctx:notify("hello from " .. inst:title())
-    end
-  end,
-}
+cs.bind("ctrl+shift+p", function(ctx)
+  local inst = ctx:selected()
+  if inst then
+    ctx:notify("hello from " .. inst:title())
+  end
+end, { help = "say hello" })
 ```
-
-`ctx` exposes [methods](#ctx-methods) that forward to the `Host` interface.
 
 ## Directory Layout
 
-Scripts are **always global** — stored at `~/.claude-squad/scripts/`, not inside a workspace's `.claude-squad/scripts/`. This is a deliberate choice (see [Design Decisions](#design-decisions)).
+Scripts are **always global** — stored at `~/.claude-squad/scripts/`, not inside a workspace's `.claude-squad/scripts/`. Defaults live inside the binary.
 
 ```
 ~/.claude-squad/
@@ -91,12 +105,38 @@ Scripts are **always global** — stored at `~/.claude-squad/scripts/`, not insi
 ├── state.json
 ├── workspaces.json
 └── scripts/
-    ├── push_branch.lua
-    ├── resume_all.lua
+    ├── my_override.lua
+    ├── spawn_instance.lua
     └── ...
 ```
 
-`app/app_scripts.go#scriptsDir` resolves this path via `config.GetConfigDir()` — the global variant, not workspace-scoped. Files are loaded in alphabetical order (`loader.go#loadScripts`).
+`app/app_scripts.go#scriptsDir` resolves the user directory via `config.GetConfigDir()`. Files load alphabetically (`loader.go#loadScripts`). Defaults load first, users next — so any `cs.bind` in a user file overwrites the default for that key.
+
+## Safety Rails
+
+Three layers guard against a broken script locking the user out of the TUI.
+
+### Embedded defaults always load
+
+`defaults.lua` is packaged into the binary via `go:embed`. `initScriptsIn` in `app/app_scripts.go` calls `engine.LoadDefaults()` before the user-script pass, so the stock keymap is live even when user scripts are absent, syntactically broken, or intentionally skipped.
+
+### `--no-scripts` CLI flag
+
+Passing `--no-scripts` to `claude-squad` skips the user-scripts directory entirely; only the embedded defaults load. Use it to recover from a script that crashes the TUI on startup:
+
+```bash
+claude-squad --no-scripts
+```
+
+Source: `main.go:269` wires the flag, `app/app.go:186` stores it as `skipScripts`, `app/app_scripts.go:211` skips the `engine.Load(dir)` call when set.
+
+### Hard-reserved `ctrl+c`
+
+`state_default.go#handleStateDefaultKey` checks `msg.String() == "ctrl+c"` **before** dispatching to the engine and returns `tea.Quit` unconditionally. A script that rebinds `ctrl+c` via `cs.bind` is silently refused (the reserved-keys set in `buildReservedKeys()` includes it), and even if the engine were bypassed, the pre-dispatch check still fires. `ctrl+q` (detach from attach overlay) is also reserved but only blocked from the default state — the overlay handlers own it there.
+
+### Parse-error fallback
+
+A user script that fails to compile is logged (to `$TMPDIR/claudesquad.log`) and skipped. Other scripts in the directory continue to load. Defaults remain live. The user sees the error in the log file on next inspection; they are not blocked from launching the TUI.
 
 ## Security
 
@@ -128,7 +168,7 @@ Even inside the allowed set, these escape hatches are nil'd out after library lo
 | `collectgarbage` | Could be used to probe the Go runtime; no legitimate script use. |
 | `string.dump` | Serializes a function to bytecode, which `gopher-lua` can execute — bypasses our source-only load path. |
 
-Source: `script/sandbox.go:42-58`.
+Source: `script/sandbox.go`.
 
 ### Userdata Boundary
 
@@ -136,7 +176,7 @@ All host objects (`session.Instance`, `git.GitWorktree`, `ctx`) are exposed as o
 
 ### Untrusted Scripts
 
-Scripts are user-provided, not downloaded. The sandbox protects against an author's *mistake* (e.g. accidentally calling a destructive API in a wide-matching precondition) rather than a malicious script — a malicious script can still kill every instance, spam the log, or consume CPU. Users should treat `~/.claude-squad/scripts/` the same way they treat `~/.bashrc`.
+Scripts are user-provided, not downloaded. The sandbox protects against an author's *mistake* (e.g. accidentally calling a destructive API in a wide-matching handler) rather than a malicious script — a malicious script can still kill every instance, spam the log, or consume CPU. Users should treat `~/.claude-squad/scripts/` the same way they treat `~/.bashrc`.
 
 ## API Reference
 
@@ -146,13 +186,54 @@ Installed as a global at engine construction (`script/api.go`).
 
 | Symbol | Signature | Description |
 |--------|-----------|-------------|
-| `cs.register_action` | `{key, help, precondition?, run}` → void | Register a key binding. **Load-time only.** Raises a Lua error if called from inside a dispatched action. |
+| `cs.bind` | `(key, fn, {help}?)` → void | Register a key binding. **Load-time only.** Overwrites existing bindings. |
+| `cs.unbind` | `(key)` → void | Remove a binding. **Load-time only.** Silent no-op for reserved keys. |
+| `cs.register_action` | `{key, help, precondition?, run}` → void | Table-form alias for `cs.bind`. Retained for back-compat and for handlers that want an explicit `precondition` — the precondition is evaluated before `run`, and a falsy return skips the action silently. |
+| `cs.actions.*` | various | Catalog of host primitives — see [cs.actions catalog](#csactions-catalog). |
+| `cs.await` | `(id?)` → any | Suspend the current coroutine until `Engine.Resume` delivers a value for `id`. Without an argument, waits on the most recently enqueued intent. See [Intent Lifecycle](#intent-lifecycle). |
 | `cs.log` | `(level: string, msg: string)` → void | Buffer a log entry. Drained by the app into the main log file. `level` is free-form (`"info"`, `"warn"`, `"error"` are conventional). |
-| `cs.notify` | `(msg: string)` → void | Send a transient message to the error/info bar. When called at load time (no active dispatch), downgrades to a log entry. |
+| `cs.notify` | `(msg: string)` → void | Send a transient message to the error/info bar. When called at load time, downgrades to a log entry. |
 | `cs.now` | `()` → number | Unix time in seconds. |
 | `cs.sprintf` | `(fmt, ...)` → string | Alias for `string.format`. Forgiving — non-string args are `tostring`'d before substitution. |
 
+### `cs.actions` Catalog
+
+`cs.actions.*` are the primitives `cs.bind` handlers call to make things happen in the TUI. They split into two categories.
+
+**Sync primitives** run on the dispatch goroutine by calling a `Host` method directly. No overlay, no `tea.Cmd`, no coroutine yield.
+
+| Primitive | Effect |
+|-----------|--------|
+| `cs.actions.cursor_up()` | Move the list selection up. |
+| `cs.actions.cursor_down()` | Move the list selection down. |
+| `cs.actions.toggle_diff()` | Toggle the diff overlay. |
+| `cs.actions.workspace_prev()` | Focus the previous workspace tab. |
+| `cs.actions.workspace_next()` | Focus the next workspace tab. |
+
+**Deferred primitives** enqueue an `Intent` on the host and `Yield` the running coroutine with the resulting `IntentID`. Any UI work that opens an overlay or produces a `tea.Cmd` goes through this path. All deferred primitives take a single opt-table argument; unknown keys are ignored.
+
+| Primitive | Opt-flags | Default | Intent |
+|-----------|-----------|---------|--------|
+| `cs.actions.quit()` | — | | `QuitIntent` |
+| `cs.actions.push_selected{confirm=?}` | `confirm` | `true` | `PushSelectedIntent{Confirm}` |
+| `cs.actions.kill_selected{confirm=?}` | `confirm` | `true` | `KillSelectedIntent{Confirm}` |
+| `cs.actions.checkout_selected{confirm=?, help=?}` | `confirm`, `help` | `true`, `true` | `CheckoutIntent{Confirm, Help}` |
+| `cs.actions.resume_selected()` | — | | `ResumeIntent` |
+| `cs.actions.new_instance{prompt=?, title=?}` | `prompt`, `title` | `false`, `""` | `NewInstanceIntent{Prompt, Title}` |
+| `cs.actions.show_help()` | — | | `ShowHelpIntent` |
+| `cs.actions.open_workspace_picker()` | — | | `WorkspacePickerIntent` |
+| `cs.actions.inline_attach_agent()` | — | | `InlineAttachIntent{Pane: Agent}` |
+| `cs.actions.inline_attach_terminal()` | — | | `InlineAttachIntent{Pane: Terminal}` |
+| `cs.actions.fullscreen_attach_agent()` | — | | `FullscreenAttachIntent{Pane: Agent}` |
+| `cs.actions.fullscreen_attach_terminal()` | — | | `FullscreenAttachIntent{Pane: Terminal}` |
+| `cs.actions.quick_input_agent()` | — | | `QuickInputIntent{Pane: Agent}` |
+| `cs.actions.quick_input_terminal()` | — | | `QuickInputIntent{Pane: Terminal}` |
+
+Source of truth: `script/api_actions.go` (primitives + Lua wiring), `script/intent.go` (Intent types).
+
 ### `ctx` Methods
+
+A userdata handed to every bound handler. Lives for one dispatch.
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
@@ -163,7 +244,7 @@ Installed as a global at engine construction (`script/api.go`).
 | `ctx:repo_path()` | → string | Repo root new instances should be created against. |
 | `ctx:default_program()` | → string | The configured default agent command (e.g. `"claude"`). |
 | `ctx:branch_prefix()` | → string | The branch prefix for the active workspace (e.g. `"alice/"`). |
-| `ctx:new_instance{title=, ...}` | → instance | Create a new session. Required: `title`. Optional: `program`, `path`, `prompt`, `branch`, `auto_yes`. The instance is queued — actual addition to the list happens on the main goroutine after the script returns. |
+| `ctx:new_instance{title=, ...}` | → instance | Create a new session. Required: `title`. Optional: `program`, `path`, `prompt`, `branch`, `auto_yes`. Instance is queued; actual `list.AddInstance` happens on the main goroutine after the script returns. |
 | `ctx:log(level, msg)` | → void | Equivalent to `cs.log`. |
 | `ctx:notify(msg)` | → void | Equivalent to `cs.notify` when dispatch is active. |
 
@@ -208,33 +289,79 @@ Wraps `*git.GitWorktree`. Obtained from `inst:worktree()`.
 
 ## Registration Rules
 
-`cs.register_action` is **load-time only** — the engine sets `loading=true` inside `Load()` and rejects registration outside that window with a Lua error.
+`cs.bind`, `cs.unbind`, and `cs.register_action` are **load-time only** — the engine sets `loading=true` inside `Load()` / `LoadDefaults()` and rejects registration outside that window with a Lua error. To change bindings at runtime, edit the source and restart.
 
 ### Key Collisions
 
-Collision handling is deterministic and logged, never fatal:
-
 | Collision | Behavior |
 |-----------|----------|
-| Against a built-in key (in `keys.GlobalKeyStringsMap` or `ctrl+q`) | Registration skipped, warning logged. Built-ins always win. |
-| Against an already-registered script key | Registration skipped, warning logged. First-loaded wins (files load alphabetically). |
+| Against a reserved key (`ctrl+c`) | Registration skipped, warning logged. `ctrl+c` always means quit. |
+| Against a previously loaded binding (default or earlier script) | **Overwrites** silently. This is how user scripts customize defaults. |
 
-Scripts cannot rebind built-in keys. If you need `n` to do something custom, pick a different key.
+This is a behavioral change from the pre-migration spec: `cs.bind` is overwrite-semantics because overriding a default is the common case. If you need to know whether a key is already taken, call `cs.unbind(key)` first (it's a no-op for reserved keys) and then `cs.bind`.
 
 ### Required vs Optional Fields
 
 ```lua
+-- Preferred form: positional handler with optional opts table
+cs.bind("ctrl+shift+r", function(ctx)
+  -- do work...
+end, { help = "Resume all" })
+
+-- Table form (alias): same effect, adds precondition
 cs.register_action{
-  key = "ctrl+shift+r",       -- required, string
-  help = "Resume all",        -- optional, string; shown in help panel
-  precondition = function(ctx) -- optional, function(ctx) -> bool
+  key = "ctrl+shift+r",
+  help = "Resume all",
+  precondition = function(ctx)
     return #ctx:instances() > 0
   end,
-  run = function(ctx) ... end, -- required, function(ctx) -> void
+  run = function(ctx)
+    -- do work...
+  end,
 }
 ```
 
-A `precondition` that returns falsy silently skips the action (useful for contextual keys that should no-op when selection is empty). A precondition that raises an error surfaces as a dispatch error.
+A `precondition` that returns falsy silently skips the handler. A precondition that raises surfaces as a dispatch error.
+
+## Intent Lifecycle
+
+Deferred primitives route through a 6-step enqueue → yield → Cmd → runXYZ → resume → continue lifecycle so Lua handlers can await overlay results or multi-step flows on the main goroutine without blocking.
+
+1. **Enqueue.** A handler calls e.g. `cs.actions.push_selected{}`. The primitive calls `host.Enqueue(intent)`, which stores the intent on the `scriptHost` and returns a monotonically increasing `IntentID`.
+2. **Yield.** The primitive calls `L.Yield(id)`. The coroutine suspends; `runAction` catches the yield and parks the coroutine in `engine.pending[id]`.
+3. **Cmd.** When `Engine.Dispatch` returns from `runAction`, `dispatchScript` drains the `scriptHost` via `host.drain()` and returns the collected intents inside `scriptDoneMsg.pendingIntents`.
+4. **runXYZ.** `app.Update` receives the `scriptDoneMsg` and walks each `pendingIntent`. `handleScriptIntent` checks preconditions (moved here from the retired `ActionRegistry`) and calls the matching `runXYZ` helper in `app/intents.go`. Each helper returns the same `tea.Cmd` it did pre-migration (e.g. `runSubmitSelected` opens the push-confirm overlay).
+5. **Resume.** `handleScriptIntent` batches a `scriptResumeMsg{id}` with that `tea.Cmd`. When the message fires, `Engine.Resume(id, nil)` unparks the coroutine; any `cs.await(id)` call resumes with the delivered value.
+6. **Continue.** The coroutine runs to completion or yields again on another deferred primitive, repeating the loop.
+
+```
+Lua: cs.bind("p", function()
+       cs.await(cs.actions.push_selected{})  -- yields here
+       cs.notify("pushed")                   -- runs after resume
+     end)
+
+Step:       [1 Enqueue][2 Yield]──┐
+                                  ▼
+                 host.intents += PushSelectedIntent
+                                  │
+                     [3 Cmd: scriptDoneMsg]
+                                  │
+                                  ▼
+                     handleScriptIntent (app)
+                                  │
+                     [4 runSubmitSelected] → overlay opens
+                                  │
+                     [5 scriptResumeMsg]
+                                  │
+                                  ▼
+                     Engine.Resume(id) — unparks coroutine
+                                  │
+                     [6 cs.notify("pushed")] runs
+```
+
+Source: `script/api_actions.go` (steps 1-2), `app/app_scripts.go#dispatchScript` and `#handleScriptDone` (step 3), `app/app_scripts.go#handleScriptIntent` + `app/intents.go` (step 4), `script/engine.go#Resume` (step 5).
+
+**Forgotten `cs.await`**: Even if a handler enqueues a deferred primitive without calling `cs.await`, the primitive still yields — the coroutine is simply abandoned in `engine.pending` rather than racing ahead. Lua state remains consistent; the coroutine is collected when the LState is.
 
 ## Dispatch Flow
 
@@ -245,11 +372,13 @@ User keystroke
 app/app.go: handleKeyPress
      │
      ▼
-state_default.go: ActionRegistry.Dispatch
+app/state_default.go: handleStateDefaultKey
      │
-     ├── hit  → built-in action runs on main goroutine
+     ├── ctrl+c → tea.Quit (hard-reserved, pre-engine)
      │
-     └── miss ──► app_scripts.go: dispatchScript(key)
+     ├── Esc → dismiss diff / exit scroll mode (state-specific)
+     │
+     └── else ──► app_scripts.go: dispatchScript(key)
                       │
                       ├── Engine.HasAction(key) false → return (nil, false)
                       │                                     │
@@ -262,47 +391,51 @@ state_default.go: ActionRegistry.Dispatch
                                goroutine: Engine.Dispatch(key, host)
                                       │ (holds engine.mu)
                                       │
-                                      ├── precondition → bail if falsy
-                                      ├── run(ctx)
+                                      ├── runAction(coroutine)
+                                      │    ├── precondition → bail if falsy
+                                      │    └── run(ctx)
                                       │
                                       ▼
-                               scriptDoneMsg{err, pending, notices}
+                               scriptDoneMsg{err, pendingInstances, notices, pendingIntents}
                                       │
                                       ▼
                                Update: handleScriptDone
                                       │
-                                      ├── for each pending inst: list.AddInstance
-                                      ├── for each notice: errBox
+                                      ├── list.AddInstance for each pending inst
+                                      ├── errBox for each notice
+                                      ├── handleScriptIntent for each intent (→ step 4 of Intent Lifecycle)
                                       └── if err: errBox
 ```
-
-Source: `app/app_scripts.go#dispatchScript`, `app/app_scripts.go#handleScriptDone`.
 
 ## Concurrency
 
 `gopher-lua` is not goroutine-safe. The engine guarantees serialized Lua execution through `Engine.mu`:
 
 1. `HasAction` — takes the mutex, cheap map lookup, releases. Called on the main goroutine to decide whether to schedule a dispatch.
-2. `Dispatch` — takes the mutex, runs the precondition and run function under it, releases. Called from a `tea.Cmd` goroutine so the Bubble Tea main loop stays responsive while Lua executes.
+2. `Dispatch` — takes the mutex, runs the handler inside a coroutine under it, releases when the coroutine yields or returns. Called from a `tea.Cmd` goroutine so the Bubble Tea main loop stays responsive while Lua executes.
+3. `Resume` — takes the mutex, unparks a coroutine, runs until it yields or returns. Called from the main goroutine via a `scriptResumeMsg`.
 
 **What this means for scripts**:
 - A slow script blocks other scripts but not the TUI.
 - Two keys bound to the same long-running script serialize.
 - Scripts see a consistent view of the host state *between* host method calls, but not *across* the whole dispatch — a script that reads `ctx:instances()` twice may see different results if the main goroutine mutated the list in between.
+- `cs.await` is cheap — the coroutine is parked, the mutex released, and no CPU is consumed until `Resume` delivers the value.
 
 **What this means for the app**:
 - `h.list.AddInstance` must run on the main goroutine. Scripts queue instances via `Host.QueueInstance`; finalization happens in `handleScriptDone`. Never call `AddInstance` from inside the Lua VM.
-- Notices are buffered and surfaced through `scriptDoneMsg` so the error-bar update happens on the main loop.
+- Intent dispatch (`handleScriptIntent`) also runs on the main goroutine, from inside `Update`.
+- Notices and the instance queue are buffered and surfaced through `scriptDoneMsg` so error-bar updates happen on the main loop.
 
 ## Error Handling
 
 | Failure mode | Surfaced as |
 |--------------|-------------|
-| Script file fails to parse | Warning in the main log; load continues with remaining files. |
+| Script file fails to parse | Warning in the main log; load continues with remaining files. Defaults remain live. |
 | `run` function raises a Lua error | Wrapped as `<file>: <error>`, returned from `Dispatch`, shown in the error bar. |
-| `precondition` raises | Wrapped as `<file>: precondition: <error>`, shown in the error bar. |
+| `precondition` (register_action) raises | Wrapped as `<file>: precondition: <error>`, shown in the error bar. |
 | Go panic inside userdata (shouldn't happen) | Recovered, Lua stack drained, wrapped as `script <file> panic: ...`. |
 | Host method returns an error (e.g. `inst:send_keys` on a dead tmux session) | The userdata method raises a Lua error, which becomes a dispatch error via the above. |
+| Intent precondition fails (e.g. `kill_selected` with nothing selected) | Intent is silently dropped in `handleScriptIntent`. The coroutine is resumed anyway so `cs.await` returns cleanly; handlers can observe the no-op by checking state via `ctx` after the await. |
 
 Script log output via `cs.log` / `ctx:log` is buffered and drained asynchronously by the app — no dispatch-time coupling to the log subsystem.
 
@@ -318,31 +451,39 @@ Three reference scripts ship in `script/testdata/`. Copy to `~/.claude-squad/scr
 
 | File | Role |
 |------|------|
-| `script/engine.go` | `Engine` lifecycle, `Dispatch`, `Load`, registration bookkeeping. |
+| `script/defaults.lua` | Canonical stock keymap, embedded via `go:embed`. |
+| `script/engine.go` | `Engine` lifecycle, `Dispatch`, `Resume`, `Load`, `LoadDefaults`, coroutine bookkeeping. |
 | `script/sandbox.go` | Allow-list lib loader, escape-hatch stripping. See [Security](#security). |
-| `script/api.go` | Installs the `cs` global table. |
+| `script/api.go` | Installs the `cs` global (`bind`, `unbind`, `register_action`, `log`, `notify`, `now`, `sprintf`, `await`). |
+| `script/api_actions.go` | Installs `cs.actions.*` (sync + deferred primitives). |
+| `script/intent.go` | Deferred Intent types consumed by the app. |
 | `script/loader.go` | Walks `~/.claude-squad/scripts/`, runs each `.lua` file under `loading=true`. |
 | `script/host.go` | The `Host` interface. |
 | `script/userdata_ctx.go` | `ctx` userdata metatable and methods. |
 | `script/userdata_instance.go` | `instance` userdata metatable and methods. |
 | `script/userdata_worktree.go` | `worktree` userdata metatable and methods. |
-| `app/app_scripts.go` | `scriptHost` adapter, `initScripts`, `dispatchScript`, `handleScriptDone`. |
-| `app/state_default.go` | Dispatch fallthrough to the script engine after built-in miss. |
+| `app/app_scripts.go` | `scriptHost` adapter, `initScripts`, `dispatchScript`, `handleScriptIntent`, `handleScriptDone`. |
+| `app/intents.go` | Preconditions + `runXYZ` helpers each intent routes to. |
+| `app/state_default.go` | `ctrl+c` hard-reserve and single-point dispatch into the script engine. |
 | `script/testdata/` | Sample scripts. |
 
 ## Design Decisions
 
 **Lua, not JS/Python/a custom DSL.** `gopher-lua` is pure Go (no cgo, matches our `CGO_ENABLED=0` build), small, and embeddable with a single import. Lua 5.1's surface is small enough that a new user can skim the API reference and be productive; a bigger language would make the sandbox audit hard to keep honest.
 
-**Scripts are global, not per-workspace.** Users think of custom keybindings as personal ergonomics, not project-specific config. A script that pushes branches or spawns review sessions should work across every repo the user opens. If per-workspace scripts are requested later, they can be loaded *in addition to* globals — the engine's registration model already supports multiple sources.
+**Defaults live in Lua, not Go.** Before the migration, built-in hotkeys were a Go `ActionRegistry` that users could not touch. Since every default now goes through `cs.bind`, users customize by editing a file in `~/.claude-squad/scripts/` rather than forking and recompiling. The engine codepath is identical for defaults and user scripts — there is no special "built-in" tier.
+
+**Scripts are global, not per-workspace.** Users think of custom keybindings as personal ergonomics, not project-specific config. A script that pushes branches or spawns review sessions should work across every repo the user opens.
 
 **Allow-list sandbox, not deny-list.** Deny-lists silently widen when the underlying library gains new features. The allow-list in `sandbox.go` means a future `gopher-lua` release that adds a new standard library has no effect on us until someone changes that file.
 
-**Load-time-only registration.** Letting scripts mutate the key map at runtime opens a pit of complexity: hot-reloading, conflict resolution mid-dispatch, state leakage between actions. Scripts register once at startup and are immutable thereafter. To change bindings, edit the file and restart.
+**Load-time-only registration.** Letting scripts mutate the key map at runtime opens a pit of complexity: hot-reloading, conflict resolution mid-dispatch, state leakage between actions. Scripts register once at startup and are immutable thereafter.
 
-**Built-ins always win on collision.** Users who install a third-party script should never find that `n` (new instance) has been silently rebound to something else. The warning log tells the script author what happened without breaking the user's mental model of the TUI.
+**Overwrite on collision (defaults → user).** The common case is a user replacing a default binding; the error path would force `cs.unbind` + `cs.bind` everywhere. Overwrite-semantics keep the override surface terse and match how people actually use custom keymaps.
 
-**First-loaded wins on script-vs-script collision.** Alphabetical load order means collisions are deterministic — `a_script.lua` beats `b_script.lua`. Users can rename files to resolve conflicts without editing content.
+**Coroutine-based deferred intents.** The alternative — exposing tea.Cmd construction to Lua — would leak Bubble Tea internals into the sandbox. A coroutine + Intent enum keeps the API host-agnostic: Lua sees "enqueue this, await the result," and Go decides how to realize that intent on the main loop.
+
+**Hard-reserved `ctrl+c`.** No matter what a user script does, `ctrl+c` in the default state always quits. This is the one footgun we refuse to let scripts take away.
 
 **No `io`, `os`, or shell execution in the sandbox.** If a script needs to shell out, it should do it via an instance's tmux session (where the user already has agent output visible) rather than forking a subprocess the user cannot observe. This keeps the surface of "what scripts can do" bounded to "what the TUI already shows."
 
