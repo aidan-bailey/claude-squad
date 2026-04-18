@@ -107,6 +107,7 @@ claude-squad --workspace <name>
 - [USAGE.md](USAGE.md) — comprehensive TUI guide and CLI reference
 - [CONTRIBUTING.md](CONTRIBUTING.md) — contribution guidelines
 - [docs/specs/workspaces.md](docs/specs/workspaces.md) — workspace registration, isolation via `WorkspaceContext`, switching, and migration
+- [docs/specs/scripting.md](docs/specs/scripting.md) — Lua scripting sandbox, dispatch flow, and `cs`/`ctx`/`instance`/`worktree` API reference
 
 ## Architecture
 
