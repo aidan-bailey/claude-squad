@@ -120,6 +120,28 @@ func (e *Engine) Load(dir string) {
 	loadScripts(e, dir)
 }
 
+// BeginLoad brackets a manual load session (tests and the embedded
+// defaults loader). It acquires e.mu and flips the loading flag so
+// cs.bind / cs.register_action accept registrations. Callers must
+// balance every BeginLoad with an EndLoad — the mutex stays held in
+// between. Nested BeginLoad calls panic rather than silently deadlock.
+func (e *Engine) BeginLoad(file string) {
+	e.mu.Lock()
+	if e.loading {
+		e.mu.Unlock()
+		panic("script: BeginLoad called while already loading")
+	}
+	e.loading = true
+	e.curFile = file
+}
+
+// EndLoad terminates a BeginLoad session.
+func (e *Engine) EndLoad() {
+	e.loading = false
+	e.curFile = ""
+	e.mu.Unlock()
+}
+
 // HasAction reports whether any script has registered for the given
 // raw key string. The app layer calls this before scheduling a
 // script dispatch Cmd so it can short-circuit unhandled keys without
@@ -200,16 +222,19 @@ func (e *Engine) Resume(id IntentID, value lua.LValue) (lua.LValue, error) {
 // runAction executes a scriptAction under the already-held engine
 // mutex. It installs a ctx userdata, calls the precondition (if any),
 // bails quietly when the precondition returns falsy, and otherwise
-// calls run(ctx). Lua errors become Go errors; Go panics in userdata
-// are recovered and wrapped.
+// runs act.run inside a coroutine so cs.await can yield without
+// unwinding to the host.
+//
+// On ResumeOK the coroutine finished synchronously. On ResumeYield the
+// handler awaited a host intent; the coroutine is re-tracked under the
+// yielded IntentID so Engine.Resume can continue it when the host
+// posts back. Panics and Lua errors are wrapped with the source file.
 func (e *Engine) runAction(act *scriptAction, h Host) (err error) {
 	e.curHost = h
 	defer func() {
 		e.curHost = nil
 		if r := recover(); r != nil {
 			err = fmt.Errorf("script %s panic: %v", act.file, r)
-			// Drain the Lua stack so subsequent dispatches see a
-			// clean state.
 			e.L.SetTop(0)
 		}
 	}()
@@ -229,20 +254,70 @@ func (e *Engine) runAction(act *scriptAction, h Host) (err error) {
 		}
 	}
 
-	e.L.Push(act.run)
-	e.L.Push(ctx)
-	if err := e.L.PCall(1, 0, nil); err != nil {
-		return fmt.Errorf("%s: %w", act.file, err)
+	co, _ := e.L.NewThread()
+	e.lastEnqueued = 0
+	st, rerr, vals := e.L.Resume(co, act.run, ctx)
+	switch st {
+	case lua.ResumeOK:
+		return nil
+	case lua.ResumeYield:
+		if len(vals) == 0 {
+			return fmt.Errorf("%s: handler yielded without an intent id", act.file)
+		}
+		next, ok := vals[0].(lua.LNumber)
+		if !ok {
+			return fmt.Errorf("%s: handler yielded non-numeric intent id %v", act.file, vals[0])
+		}
+		e.coroutines[IntentID(next)] = coroutineSlot{co: co}
+		return nil
+	default:
+		return fmt.Errorf("%s: %w", act.file, rerr)
 	}
+}
+
+// bind installs act under act.key. A reserved key is rejected with a
+// log warning. Unlike the legacy register() policy, an existing
+// binding is overwritten — scripts are expected to compose via
+// cs.unbind + cs.bind. Must be called under e.mu with e.loading true.
+func (e *Engine) bind(act *scriptAction) error {
+	if !e.loading {
+		return fmt.Errorf("cs.bind can only be called at load time")
+	}
+	if e.reserved[act.key] {
+		log.WarningLog.Printf("script %s: key %q is reserved by built-in; skipping", act.file, act.key)
+		return nil
+	}
+	if _, ok := e.actions[act.key]; !ok {
+		e.order = append(e.order, act.key)
+	}
+	e.actions[act.key] = act
 	return nil
 }
 
-// register binds key to action. Rules:
-//   - Collision with a built-in key ⇒ warn + skip.
-//   - Collision with an already-registered script key ⇒ warn + skip
-//     (first-registered wins).
-//   - Called outside Load() ⇒ Lua error (scripts cannot mutate
-//     bindings at runtime).
+// unbind removes key from the action map. Reserved keys are left
+// alone — scripts that try to unbind a hard-reserved key (e.g.
+// ctrl+c) get a log warning but no error so a defensive
+// `cs.unbind("ctrl+c")` never breaks script loading.
+func (e *Engine) unbind(key string) {
+	if e.reserved[key] {
+		log.WarningLog.Printf("script: cs.unbind(%q) is reserved; ignoring", key)
+		return
+	}
+	if _, ok := e.actions[key]; !ok {
+		return
+	}
+	delete(e.actions, key)
+	for i, k := range e.order {
+		if k == key {
+			e.order = append(e.order[:i], e.order[i+1:]...)
+			break
+		}
+	}
+}
+
+// register is the legacy first-wins path used by older cs.register_action
+// semantics. Kept only so existing tests and the shim in api.go can
+// continue to call it until Task 5 swaps the alias over to bind().
 func (e *Engine) register(act *scriptAction) error {
 	if !e.loading {
 		return fmt.Errorf("cs.register_action can only be called at load time")

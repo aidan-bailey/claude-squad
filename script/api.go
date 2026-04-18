@@ -25,6 +25,8 @@ func installAPI(L *lua.LState, e *Engine) {
 	cs := L.NewTable()
 
 	cs.RawSetString("register_action", L.NewClosure(apiRegisterAction(e), L.NewUserData()))
+	cs.RawSetString("bind", L.NewClosure(apiBind(e), L.NewUserData()))
+	cs.RawSetString("unbind", L.NewClosure(apiUnbind(e), L.NewUserData()))
 	cs.RawSetString("log", L.NewClosure(apiLog(e), L.NewUserData()))
 	cs.RawSetString("notify", L.NewClosure(apiNotify(e), L.NewUserData()))
 	cs.RawSetString("now", L.NewFunction(apiNow))
@@ -77,6 +79,44 @@ func apiRegisterAction(e *Engine) lua.LGFunction {
 		if err := e.register(act); err != nil {
 			L.RaiseError("%s", err.Error())
 		}
+		return 0
+	}
+}
+
+// apiBind backs cs.bind(key, fn [, opts]). Unlike cs.register_action
+// it takes the handler function as a positional argument and always
+// overwrites an existing binding, which is what makes user-script
+// overrides of defaults.lua clean (cs.unbind + cs.bind, or just
+// cs.bind if replacement is desired).
+func apiBind(e *Engine) lua.LGFunction {
+	return func(L *lua.LState) int {
+		key := L.CheckString(1)
+		fn := L.CheckFunction(2)
+		var help string
+		if L.GetTop() >= 3 && L.Get(3) != lua.LNil {
+			opts := L.CheckTable(3)
+			help = luaTableString(opts, "help", "")
+		}
+		act := &scriptAction{
+			key:  key,
+			help: help,
+			file: e.currentFile(),
+			run:  fn,
+		}
+		if err := e.bind(act); err != nil {
+			L.RaiseError("%s", err.Error())
+		}
+		return 0
+	}
+}
+
+// apiUnbind backs cs.unbind(key). Removing a reserved key is silently
+// ignored — scripts can call cs.unbind defensively without needing to
+// know which keys the engine protects.
+func apiUnbind(e *Engine) lua.LGFunction {
+	return func(L *lua.LState) int {
+		key := L.CheckString(1)
+		e.unbind(key)
 		return 0
 	}
 }
