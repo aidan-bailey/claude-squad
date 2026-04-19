@@ -215,10 +215,17 @@ func initScriptsIn(h *home, dir string, skipUser bool) {
 }
 
 // buildReservedKeys is the hard-reserve list the engine uses to
-// reject cs.bind/cs.unbind calls. ctrl+c is the panic-exit backstop;
-// ctrl+q is the attach-overlay detach key that lives outside any
-// dispatch registry. Task 15 narrows this to just ctrl+c once the
-// user-facing keymap becomes fully Lua-owned.
+// reject cs.bind / cs.unbind calls at load time. Reservation is a
+// property of the binding API, not of dispatch — dispatch only runs
+// in stateDefault via dispatchScript, so binding a key like ctrl+a
+// (which the textinput widget uses for LineStart in stateQuickInteract)
+// is safe and not reserved here.
+//
+// ctrl+c is the panic-exit backstop the app handles before any state
+// routing, and must never reach the script engine. ctrl+q is the
+// overlay-detach key handled by the attach overlays themselves; it
+// never reaches stateDefault's dispatchScript, but we reserve it to
+// keep the user model simple ("the detach key can't be overridden").
 func buildReservedKeys() map[string]bool {
 	return map[string]bool{
 		"ctrl+c": true,
@@ -284,12 +291,12 @@ func (m *home) handleScriptIntent(p pendingIntent) tea.Cmd {
 	var cmd tea.Cmd
 	switch i := p.intent.(type) {
 	case script.QuitIntent:
-		// Quit short-circuits: handleQuit saves and returns tea.Quit,
-		// which ends the program before any resume could matter — no
-		// point batching a scriptResumeMsg the main loop will never
-		// process.
+		// handleQuit normally returns tea.Quit and the main loop exits
+		// before the resume matters. But on SaveInstances failure it
+		// returns a non-terminal error Cmd, and short-circuiting here
+		// would leak the awaiting coroutine. Fall through to the
+		// tea.Batch below so the resume fires either way.
 		_, cmd = m.handleQuit()
-		return cmd
 	case script.PushSelectedIntent:
 		if !selectedNotBusyNotWorkspace(m) {
 			break

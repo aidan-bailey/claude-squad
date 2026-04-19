@@ -183,17 +183,21 @@ func (e *Engine) track(id IntentID, co *lua.LState) {
 // handlers that need a typed value should keep their state in
 // closures rather than in await's return. Errors propagate from the
 // underlying Resume.
+//
+// curHost swap and the resume itself run under a single critical
+// section so a concurrent Dispatch can't observe the host slot during
+// the window between "curHost = h" and the coroutine actually using
+// it. The resume body runs via resumeLocked, not Resume, to avoid
+// double-locking.
 func (e *Engine) ResumeWithHost(id IntentID, h Host) error {
 	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	prevHost := e.curHost
 	e.curHost = h
-	e.mu.Unlock()
+	defer func() { e.curHost = prevHost }()
 
-	_, err := e.Resume(id, lua.LNil)
-
-	e.mu.Lock()
-	e.curHost = prevHost
-	e.mu.Unlock()
+	_, err := e.resumeLocked(id, lua.LNil)
 	return err
 }
 
@@ -206,7 +210,12 @@ func (e *Engine) ResumeWithHost(id IntentID, h Host) error {
 func (e *Engine) Resume(id IntentID, value lua.LValue) (lua.LValue, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.resumeLocked(id, value)
+}
 
+// resumeLocked is the body of Resume minus the lock. Callers must
+// already hold e.mu.
+func (e *Engine) resumeLocked(id IntentID, value lua.LValue) (lua.LValue, error) {
 	slot, ok := e.coroutines[id]
 	if !ok {
 		return lua.LNil, fmt.Errorf("script: no coroutine awaiting intent %d", id)

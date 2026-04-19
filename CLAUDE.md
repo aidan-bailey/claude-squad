@@ -115,7 +115,7 @@ claude-squad --workspace <name>
 
 `main.go` (Cobra CLI) → `app/app.go` (Bubble Tea Model) → manages `session/instance.go` instances
 
-The app follows Bubble Tea's Model-View-Update pattern. `app/app.go` owns the `home` model and its `Update`/`View`. Keyboard input is routed in two stages: `handleKeyPress` (`app.go`) dispatches by `m.state` to a per-state handler in `app/state_*.go`; within the default state, keys flow through `ActionRegistry.Dispatch` (`app/actions.go`, with entries grouped in `actions_*.go`). On startup, the app detects the current workspace or prompts the user to select one via the workspace picker overlay.
+The app follows Bubble Tea's Model-View-Update pattern. `app/app.go` owns the `home` model and its `Update`/`View`. Keyboard input is routed in two stages: `handleKeyPress` (`app.go`) dispatches by `m.state` to a per-state handler in `app/state_*.go`; within the default state, keys flow through the Lua engine via `app/app_scripts.go:dispatchScript`, which consults `script.Engine.HasAction` and returns a `tea.Cmd` that drains the resulting `scriptDoneMsg`. The canonical keymap lives in `script/defaults.lua` (embedded at build time); user scripts in `~/.claude-squad/scripts/*.lua` can rebind or add keys. On startup, the app detects the current workspace or prompts the user to select one via the workspace picker overlay.
 
 ### Key Packages
 
@@ -130,7 +130,7 @@ The app follows Bubble Tea's Model-View-Update pattern. `app/app.go` owns the `h
 - **`keys/`** — Keybinding definitions. Enum-based `KeyName` with global maps for lookup.
 - **`cmd/`** — `Executor` interface wrapping `os/exec` for testability.
 - **`log/`** — Centralized logging to `$TMPDIR/claudesquad.log` with Info/Warning/Error loggers and rate limiting.
-- **`script/`** — Lua scripting engine (`github.com/yuin/gopher-lua`). Users bind custom keys to Lua actions in `~/.claude-squad/scripts/*.lua` (global, not per-workspace). Dispatch falls through from `state_default.go` after the built-in key miss, via `app/app_scripts.go`'s `scriptHost` adapter. Hard-sandboxed: only `base`/`string`/`table`/`math`/`coroutine`; `dofile`/`loadfile`/`load`/`loadstring`/`require`/`string.dump` stripped. Exposed API: `cs.register_action{...}`, `cs.log`, `cs.notify`, `cs.now`, `cs.sprintf`, plus userdata wrappers for `session.Instance`, `git.GitWorktree`, and a per-dispatch `ctx`.
+- **`script/`** — Lua scripting engine (`github.com/yuin/gopher-lua`). The full built-in keymap lives in `script/defaults.lua`, embedded via `go:embed` and loaded at engine init before any user script. Users extend or override bindings from `~/.claude-squad/scripts/*.lua` (global, not per-workspace). Dispatch is driven from `state_default.go` through `app/app_scripts.go`'s `scriptHost` adapter. Hard-sandboxed: only `base`/`string`/`table`/`math`/`coroutine`; `dofile`/`loadfile`/`load`/`loadstring`/`require`/`string.dump` stripped. Exposed API: `cs.bind`/`cs.unbind`/`cs.register_action`, `cs.actions.*` (sync primitives + deferred intent factories), `cs.await`, `cs.log`, `cs.notify`, `cs.now`, `cs.sprintf`, plus userdata wrappers for `session.Instance`, `git.GitWorktree`, and a per-dispatch `ctx`.
 - **`web/`** — Next.js marketing site, deployed to GitHub Pages via CI.
 
 ### Session Lifecycle
@@ -151,7 +151,7 @@ Statuses: `Ready` (initial), `Loading` (setup in progress), `Running` (agent act
 - **Instance data schema changes.** `session.InstanceData` has a `SchemaVersion` field and `session.CurrentSchemaVersion` constant. When adding/removing/renaming fields: bump `CurrentSchemaVersion`, add an upgrade step to the switch in `session/storage_migrate.go:Migrate`, and update the JSON fixture in `cmd/workspace_migrate_shape_test.go` (drift guard for the `workspace migrate` CLI's typed mirror struct).
 - **Daemon decoupled from PTY attach.** `session.FromInstanceData` is a pure constructor — it does not spawn a tmux session. Callers that need a live PTY must call `inst.EnsureRunning()` explicitly. The daemon's `syncTracked` caches live `*Instance` objects across ticks so PTYs are spawned at most once per instance (DAEMON-05).
 - **Lua LState is not goroutine-safe.** All `script.Engine` dispatch runs under `engine.mu`; the Bubble Tea main loop invokes scripts via a `tea.Cmd` goroutine and awaits `scriptDoneMsg`. Pending instances created by scripts are queued on the `scriptHost` adapter and finalized on the main goroutine in `handleScriptDone` — never call `h.list.AddInstance` from inside the engine.
-- **Script key collisions.** `cs.register_action{key=...}` is load-time-only. Collisions with `keys.GlobalKeyStringsMap` entries are rejected with a warning (built-ins always win). Duplicate script keys: first-registered wins, second warns.
+- **Script key collisions.** `cs.bind` / `cs.register_action` overwrite each other — last-write-wins across all scripts and `defaults.lua`. `ctrl+c` is hard-reserved in the default state (app-level) so user scripts cannot steal the interrupt; `keys.KeyForString` is a reverse lookup of the built-in binding table used only for menu-bar highlighting, not for dispatch gating. Duplicate load-order: `defaults.lua` loads first, then `~/.claude-squad/scripts/*.lua` in filename order, so user bindings for the same key win.
 
 ### Persistent State
 

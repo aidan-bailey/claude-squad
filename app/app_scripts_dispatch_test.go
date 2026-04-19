@@ -69,15 +69,32 @@ func addReadyInstance(t *testing.T, h *home) *session.Instance {
 
 func TestHandleScriptIntentQuit(t *testing.T) {
 	m := newTestHome(t)
+	id := script.NewIntentID()
 	cmd := m.handleScriptIntent(pendingIntent{
-		id:     script.NewIntentID(),
+		id:     id,
 		intent: script.QuitIntent{},
 	})
 	require.NotNil(t, cmd)
-	// tea.Quit is a function that returns tea.QuitMsg when invoked.
-	msg := cmd()
-	_, ok := msg.(tea.QuitMsg)
-	assert.True(t, ok, "QuitIntent should produce tea.QuitMsg")
+
+	// QuitIntent batches tea.Quit with a resume for the awaiting
+	// coroutine — if handleQuit's save path returns a non-terminal
+	// error Cmd the resume still fires, so the Lua side never hangs.
+	batchMsg, ok := cmd().(tea.BatchMsg)
+	require.True(t, ok, "QuitIntent should produce tea.BatchMsg, got %T", cmd())
+	require.Len(t, batchMsg, 2, "batch should carry the quit Cmd and the resume Cmd")
+
+	var sawQuit, sawResume bool
+	for _, c := range batchMsg {
+		switch msg := c().(type) {
+		case tea.QuitMsg:
+			sawQuit = true
+		case scriptResumeMsg:
+			assert.Equal(t, id, msg.id, "resume must target the original intent id")
+			sawResume = true
+		}
+	}
+	assert.True(t, sawQuit, "batch must include tea.Quit")
+	assert.True(t, sawResume, "batch must include the coroutine resume")
 }
 
 func TestHandleScriptIntentPushSelectedConfirm(t *testing.T) {

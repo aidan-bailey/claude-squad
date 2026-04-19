@@ -132,7 +132,12 @@ Source: `main.go:269` wires the flag, `app/app.go:186` stores it as `skipScripts
 
 ### Hard-reserved `ctrl+c`
 
-`state_default.go#handleStateDefaultKey` checks `msg.String() == "ctrl+c"` **before** dispatching to the engine and returns `tea.Quit` unconditionally. A script that rebinds `ctrl+c` via `cs.bind` is silently refused (the reserved-keys set in `buildReservedKeys()` includes it), and even if the engine were bypassed, the pre-dispatch check still fires. `ctrl+q` (detach from attach overlay) is also reserved but only blocked from the default state — the overlay handlers own it there.
+The reservation operates at two layers:
+
+1. **Binding-API layer (global, load time).** `buildReservedKeys()` puts `ctrl+c` and `ctrl+q` in the reserved set passed to `script.NewEngine`. `cs.bind` / `cs.unbind` silently refuse calls for those keys — a user script cannot register a handler for them, period.
+2. **Dispatch layer (default state only).** `state_default.go#handleStateDefaultKey` checks `msg.String() == "ctrl+c"` **before** ever calling `dispatchScript` and returns `tea.Quit` unconditionally. Even if the binding layer were bypassed, the pre-dispatch check still wins in the default state.
+
+Scope caveat: the script engine is only consulted from `stateDefault`. Other states (e.g. `stateQuickInteract`) never call `dispatchScript`, so `ctrl+c` / `ctrl+q` in those states are handled by the state's own widget (the textinput's line editor, the attach overlay's detach handler). That is by design — the hard-reserve prevents a user script from *stealing* those keys from the default state, not from overriding widget behavior in other states.
 
 ### Parse-error fallback
 
