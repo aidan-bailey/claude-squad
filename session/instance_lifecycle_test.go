@@ -177,6 +177,30 @@ func TestInstance_ResumePropagatesSaveStateError(t *testing.T) {
 	assert.ErrorIs(t, err, wantErr, "Resume must propagate saveState error")
 }
 
+// TestInstance_ResumeSurfacesBranchGoneHint is the F10 regression
+// guard on the Resume side. When a paused instance's branch is
+// deleted externally (via `git branch -D` or similar) and has no
+// origin remote, Resume must return an error that (a) preserves the
+// typed `git.ErrBranchGone` sentinel so callers can classify it, and
+// (b) tells the operator how to recover — by killing the instance,
+// not by mystery-debugging a "failed to setup git worktree" blob.
+func TestInstance_ResumeSurfacesBranchGoneHint(t *testing.T) {
+	inst := newTestPausableInstance(t)
+	require.NoError(t, inst.Pause(nil), "precondition: pause succeeds")
+
+	// Simulate the user running `git branch -D <branch>` out-of-band.
+	gw := inst.getGitWorktree()
+	cmd := exec.Command("git", "-C", gw.GetRepoPath(), "branch", "-D", gw.GetBranchName())
+	out, cmdErr := cmd.CombinedOutput()
+	require.NoError(t, cmdErr, "precondition: branch delete: %s", string(out))
+
+	err := inst.Resume(func() error { return nil })
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, git.ErrBranchGone, "typed sentinel must propagate so UI can classify")
+	assert.Contains(t, err.Error(), "kill", "Resume error must hint the kill-to-recover affordance")
+}
+
 // TestInstance_StartIsIdempotent verifies Start is a no-op on an
 // already-started instance (INST-04). A second Start must not replace
 // the tmux session and orphan the first.

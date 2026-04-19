@@ -5,6 +5,7 @@ import (
 	"claude-squad/session/agent"
 	"claude-squad/session/git"
 	"claude-squad/session/tmux"
+	"errors"
 	"path/filepath"
 
 	"fmt"
@@ -802,6 +803,9 @@ func (i *Instance) Resume(saveState func() error) error {
 
 	// Setup git worktree
 	if err := gw.Setup(); err != nil {
+		if errors.Is(err, git.ErrBranchGone) {
+			return fmt.Errorf("branch %q was deleted externally — kill this instance (D) to clean up: %w", gw.GetBranchName(), err)
+		}
 		return fmt.Errorf("failed to setup git worktree: %w", err)
 	}
 
