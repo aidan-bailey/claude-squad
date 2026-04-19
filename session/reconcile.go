@@ -115,7 +115,12 @@ func ReconcileAndRestore(data InstanceData, configDir string, cmdExec cmd.Execut
 		sanitized := tmux.ToClaudeSquadTmuxName(data.Title)
 		killCtx, killCancel := context.WithTimeout(context.Background(), reconcileTmuxTimeout)
 		killCmd := exec.CommandContext(killCtx, "tmux", "kill-session", "-t="+sanitized)
-		_ = cmdExec.Run(killCmd) // best-effort
+		// Best-effort: the tmux session may already be gone, the daemon may
+		// have just killed it, or the worktree-gone state may be stale. Log
+		// at Debug since this fires often during normal reconciliation.
+		if err := cmdExec.Run(killCmd); err != nil {
+			log.DebugKV("reconcile.tmux_kill_failed", "title", data.Title, "session", sanitized, "err", err.Error())
+		}
 		killCancel()
 		data.Status = Paused
 		return fromInstanceDataPaused(data, configDir)
