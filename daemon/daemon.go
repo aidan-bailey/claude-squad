@@ -45,7 +45,7 @@ func syncTracked(
 		inst, err := session.FromInstanceData(d, configDir)
 		if err != nil {
 			if everyN.ShouldLog() {
-				log.WarningLog.Printf("daemon construct %q failed: %v", d.Title, err)
+				log.WarnKV("daemon.construct_failed", "component", "daemon", "instance", d.Title, "err", err.Error())
 			}
 			continue
 		}
@@ -54,7 +54,7 @@ func syncTracked(
 		// — a bare AutoYes tick reads Started+!Paused and skips them.
 		if err := inst.EnsureRunning(); err != nil {
 			if everyN.ShouldLog() {
-				log.WarningLog.Printf("daemon ensure-running %q failed: %v", d.Title, err)
+				log.WarnKV("daemon.ensure_running_failed", "component", "daemon", "instance", d.Title, "err", err.Error())
 			}
 			continue
 		}
@@ -84,7 +84,8 @@ func RunDaemon(cfg *config.Config, wsCtx *config.WorkspaceContext) error {
 		return fmt.Errorf("RunDaemon: workspace context with resolved ConfigDir required")
 	}
 	configDir := wsCtx.ConfigDir
-	log.InfoLog.Printf("starting daemon")
+	dlog := log.For("component", "daemon")
+	dlog.Info("daemon.start", "config_dir", configDir, "poll_ms", cfg.DaemonPollInterval)
 
 	// Initial load so that startup errors fail fast (e.g. corrupt state.json).
 	if _, err := reloadInstanceData(configDir); err != nil {
@@ -110,12 +111,13 @@ func RunDaemon(cfg *config.Config, wsCtx *config.WorkspaceContext) error {
 			fresh, err := reloadInstanceData(configDir)
 			if err != nil {
 				if everyN.ShouldLog() {
-					log.WarningLog.Printf("daemon reload failed: %v", err)
+					dlog.Warn("daemon.reload_failed", "err", err.Error())
 				}
 			} else {
 				syncTracked(tracked, fresh, configDir, everyN)
 			}
 
+			var eligible, fired int
 			for _, instance := range tracked {
 				// Respect per-instance AutoYes (DAEMON-13). The user may
 				// have opted individual instances out via the main app.
@@ -124,16 +126,20 @@ func RunDaemon(cfg *config.Config, wsCtx *config.WorkspaceContext) error {
 				}
 				// We only store started instances, but check anyway.
 				if instance.Started() && !instance.Paused() {
+					eligible++
 					if _, hasPrompt := instance.HasUpdated(); hasPrompt {
+						dlog.Debug("daemon.autoyes.fire", "instance", instance.Title)
 						instance.TapEnter()
+						fired++
 						if err := instance.UpdateDiffStats(); err != nil {
 							if everyN.ShouldLog() {
-								log.WarningLog.Printf("could not update diff stats for %s: %v", instance.Title, err)
+								dlog.Warn("daemon.diff_stats_failed", "instance", instance.Title, "err", err.Error())
 							}
 						}
 					}
 				}
 			}
+			dlog.Debug("daemon.tick", "tracked", len(tracked), "eligible", eligible, "fired", fired)
 
 			// Handle stop before ticker.
 			select {
@@ -152,7 +158,7 @@ func RunDaemon(cfg *config.Config, wsCtx *config.WorkspaceContext) error {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigChan
-	log.InfoLog.Printf("received signal %s", sig.String())
+	dlog.Info("daemon.signal", "signal", sig.String())
 
 	// Stop the goroutine so we don't race.
 	close(stopCh)
@@ -194,7 +200,7 @@ func LaunchDaemon(wsCtx *config.WorkspaceContext) error {
 		return fmt.Errorf("failed to start child process: %w", err)
 	}
 
-	log.InfoLog.Printf("started daemon child process with PID: %d", cmd.Process.Pid)
+	log.InfoKV("daemon.launched", "component", "daemon", "pid", cmd.Process.Pid)
 
 	pidFile := filepath.Join(configDir, "daemon.pid")
 	if err := config.AtomicWriteFile(pidFile, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644); err != nil {
@@ -240,6 +246,6 @@ func StopDaemon(wsCtx *config.WorkspaceContext) error {
 		return fmt.Errorf("failed to remove PID file: %w", err)
 	}
 
-	log.InfoLog.Printf("daemon process (PID: %d) stopped successfully", pid)
+	log.InfoKV("daemon.stopped", "component", "daemon", "pid", pid)
 	return nil
 }
