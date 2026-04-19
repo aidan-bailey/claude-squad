@@ -1030,6 +1030,11 @@ var tickUpdateMetadataCmd = func() tea.Msg {
 // goroutines and waits for all of them before returning. Running inside a tea.Cmd
 // keeps the wg.Wait off the update goroutine — a stalled tmux/git subprocess
 // delays the next tick instead of freezing the UI.
+//
+// Diff refresh is gated on tmux content changes (see Instance.ShouldRefreshDiff):
+// an idle instance with no pane output does not trigger a git subprocess on
+// every tick. For N active instances with a single active agent, the git
+// fan-out drops from ~N subprocesses per tick to ~1.
 func gatherMetadataCmd(active []*session.Instance, selected *session.Instance) tea.Cmd {
 	return func() tea.Msg {
 		results := make([]metadataResult, len(active))
@@ -1048,7 +1053,11 @@ func gatherMetadataCmd(active []*session.Instance, selected *session.Instance) t
 
 				r.updated, r.hasPrompt = instance.CaptureAndProcessStatus()
 
-				if instance == selected {
+				wantFull := instance == selected
+				if !instance.ShouldRefreshDiff(r.updated, wantFull) {
+					return
+				}
+				if wantFull {
 					r.diffErr = instance.UpdateDiffStats()
 				} else {
 					r.diffErr = instance.UpdateDiffStatsShort()

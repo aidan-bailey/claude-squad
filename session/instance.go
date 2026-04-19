@@ -894,6 +894,34 @@ func (i *Instance) UpdateDiffStatsShort() error {
 	return i.updateDiffStats(SessionBackend.DiffShort)
 }
 
+// ShouldRefreshDiff reports whether a metadata tick needs to re-run the
+// diff backend for this instance. It returns true when:
+//   - the instance has no cached diff stats yet (first-time fetch),
+//   - the tmux pane content changed since the last tick (agent wrote files),
+//   - the caller needs full diff content but only short-stats are cached
+//     (selection-change upgrade path).
+//
+// When false, the tick can skip the git subprocess entirely. The paused
+// branch is also short-circuited so the daemon's AutoYes path stays cheap.
+func (i *Instance) ShouldRefreshDiff(tmuxUpdated, wantFull bool) bool {
+	if !i.isStarted() || i.GetStatus() == Paused {
+		return false
+	}
+	if tmuxUpdated {
+		return true
+	}
+	stats := i.GetDiffStats()
+	if stats == nil {
+		return true
+	}
+	// Upgrade from short to full when selection changed to an instance
+	// whose cached stats were recorded without content.
+	if wantFull && !stats.IsEmpty() && stats.Content == "" {
+		return true
+	}
+	return false
+}
+
 // updateDiffStats is the shared body for UpdateDiffStats and
 // UpdateDiffStatsShort. The diffFn parameter selects which backend
 // method runs; everything else (paused guard, branch refresh,
