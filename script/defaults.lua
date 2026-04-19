@@ -37,3 +37,24 @@ cs.bind("ctrl+t", function() cs.actions.inline_attach_terminal() end,     { help
 -- Quick input
 cs.bind("a", function() cs.actions.quick_input_agent() end,    { help = "input to agent" })
 cs.bind("t", function() cs.actions.quick_input_terminal() end, { help = "input to terminal" })
+
+-- Scroll (active content pane: diff if visible, else agent or the
+-- inline-attached terminal). Half-page bindings favor keyboard-centric
+-- workflows that never reach for the mouse wheel.
+cs.bind("pgup",       function() cs.actions.scroll_page_up() end,   { help = "scroll page up" })
+cs.bind("pgdown",     function() cs.actions.scroll_page_down() end, { help = "scroll page down" })
+cs.bind("home",       function() cs.actions.scroll_top() end,       { help = "scroll top" })
+cs.bind("end",        function() cs.actions.scroll_bottom() end,    { help = "scroll bottom" })
+cs.bind("ctrl+u",     function() cs.actions.scroll_page_up() end)
+cs.bind("ctrl+d",     function() cs.actions.scroll_page_down() end)
+
+-- Explicit terminal scroll — bypasses the active-pane rule so the user
+-- can review terminal history while the agent pane stays focused.
+cs.bind("ctrl+pgup",   function() cs.actions.scroll_terminal_page_up() end)
+cs.bind("ctrl+pgdown", function() cs.actions.scroll_terminal_page_down() end)
+
+-- List navigation. Capital K/J page the session list; g/G jump to ends.
+cs.bind("K", function() cs.actions.list_page_up() end,   { help = "list page up" })
+cs.bind("J", function() cs.actions.list_page_down() end, { help = "list page down" })
+cs.bind("g", function() cs.actions.list_top() end,       { help = "list top" })
+cs.bind("G", function() cs.actions.list_bottom() end,    { help = "list bottom" })
