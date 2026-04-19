@@ -42,6 +42,18 @@ func CheckTmuxAlive(sessionTitle string, cmdExec internalexec.Executor) bool {
 	return cmdExec.Run(existsCmd) == nil
 }
 
+// KillTmuxSessionByTitle kills the tmux session matching title's sanitized
+// name. Best-effort: returns the command error if any (commonly a benign
+// "session not found"), which most callers can ignore. Used to clear
+// orphan sessions left over from a prior crash before reusing the title.
+func KillTmuxSessionByTitle(title string, cmdExec internalexec.Executor) error {
+	sanitized := tmux.ToClaudeSquadTmuxName(title)
+	ctx, cancel := context.WithTimeout(context.Background(), reconcileTmuxTimeout)
+	defer cancel()
+	killCmd := exec.CommandContext(ctx, "tmux", "kill-session", "-t="+sanitized)
+	return cmdExec.Run(killCmd)
+}
+
 // CheckWorktreeExists checks if the worktree directory exists on disk.
 func CheckWorktreeExists(worktreePath string) bool {
 	if worktreePath == "" {
@@ -112,16 +124,12 @@ func ReconcileAndRestore(data InstanceData, configDir string, cmdExec internalex
 		return fromInstanceDataPaused(data, configDir)
 
 	case ActionKillAndPause:
-		sanitized := tmux.ToClaudeSquadTmuxName(data.Title)
-		killCtx, killCancel := context.WithTimeout(context.Background(), reconcileTmuxTimeout)
-		killCmd := exec.CommandContext(killCtx, "tmux", "kill-session", "-t="+sanitized)
 		// Best-effort: the tmux session may already be gone, the daemon may
 		// have just killed it, or the worktree-gone state may be stale. Log
 		// at Debug since this fires often during normal reconciliation.
-		if err := cmdExec.Run(killCmd); err != nil {
-			log.For("reconcile").Debug("tmux_kill_failed", "title", data.Title, "session", sanitized, "err", err.Error())
+		if err := KillTmuxSessionByTitle(data.Title, cmdExec); err != nil {
+			log.For("reconcile").Debug("tmux_kill_failed", "title", data.Title, "err", err.Error())
 		}
-		killCancel()
 		data.Status = Paused
 		return fromInstanceDataPaused(data, configDir)
 

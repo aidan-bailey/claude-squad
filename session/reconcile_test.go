@@ -25,6 +25,28 @@ func TestCheckTmuxAlive_SessionDead(t *testing.T) {
 	assert.False(t, CheckTmuxAlive("test-session", cmdExec))
 }
 
+func TestKillTmuxSessionByTitle_SendsSanitizedTarget(t *testing.T) {
+	var got []string
+	cmdExec := cmd_test.MockCmdExec{
+		RunFunc: func(c *exec.Cmd) error {
+			got = append([]string(nil), c.Args...)
+			return nil
+		},
+	}
+	err := KillTmuxSessionByTitle("prader-rs", cmdExec)
+	assert.NoError(t, err)
+	assert.Contains(t, got, "kill-session")
+	assert.Contains(t, got, "-t=claudesquad_prader-rs")
+}
+
+func TestKillTmuxSessionByTitle_PropagatesExecError(t *testing.T) {
+	cmdExec := cmd_test.MockCmdExec{
+		RunFunc: func(c *exec.Cmd) error { return &exec.ExitError{} },
+	}
+	err := KillTmuxSessionByTitle("missing", cmdExec)
+	assert.Error(t, err)
+}
+
 func TestCheckWorktreeExists_Exists(t *testing.T) {
 	dir := t.TempDir()
 	assert.True(t, CheckWorktreeExists(dir))
