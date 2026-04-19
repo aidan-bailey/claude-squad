@@ -17,7 +17,7 @@ import (
 // which returns a no-op until log.Initialize populates log.Structured.
 // Mirrors the pattern used in config_test.go.
 func TestMain(m *testing.M) {
-	log.Initialize("", false)
+	_ = log.Initialize("", false)
 	exit := m.Run()
 	log.Close()
 	os.Exit(exit)

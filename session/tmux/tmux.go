@@ -69,9 +69,10 @@ type TmuxSession struct {
 	// Output pump — continuously drains PTY output to prevent buffer deadlock.
 	// When nothing reads from ptmx, the tmux client blocks on stdout and stops
 	// processing stdin, which breaks SendKeysRaw (inline attach).
-	pumpMu   sync.Mutex
-	pumpDest io.Writer
-	pumpDone chan struct{} // closed when the pump goroutine exits
+	pumpMu     sync.Mutex
+	pumpDest   io.Writer
+	pumpDone   chan struct{}      // closed when the pump goroutine exits
+	pumpCancel context.CancelFunc // nil outside an active pump; cancels the pump's ctx
 }
 
 const TmuxPrefix = "claudesquad_"
@@ -241,6 +242,7 @@ func (t *TmuxSession) Restore() error {
 	// Close any prior PTY and wait for its pump to exit before creating a new
 	// one, otherwise the old pump goroutine leaks and keeps a stale FD alive.
 	if t.ptmx != nil {
+		t.signalPumpStop(t.ptmx)
 		_ = t.ptmx.Close()
 		t.ptmx = nil
 	}
@@ -260,8 +262,10 @@ func (t *TmuxSession) Restore() error {
 // and writes to pumpDest. This prevents the PTY output buffer from filling up,
 // which would cause the tmux client to block and stop processing input.
 func (t *TmuxSession) startOutputPump(ptmx *os.File) {
+	ctx, cancel := context.WithCancel(context.Background())
 	t.pumpMu.Lock()
 	t.pumpDest = io.Discard
+	t.pumpCancel = cancel
 	t.pumpMu.Unlock()
 	t.pumpDone = make(chan struct{})
 
@@ -269,6 +273,9 @@ func (t *TmuxSession) startOutputPump(ptmx *os.File) {
 		defer close(t.pumpDone)
 		buf := make([]byte, 4096)
 		for {
+			if ctx.Err() != nil {
+				return
+			}
 			n, err := ptmx.Read(buf)
 			if n > 0 {
 				t.pumpMu.Lock()
@@ -281,6 +288,27 @@ func (t *TmuxSession) startOutputPump(ptmx *os.File) {
 			}
 		}
 	}()
+}
+
+// signalPumpStop requests the output pump goroutine to exit promptly.
+// It cancels the pump's context AND calls SetReadDeadline(time.Now())
+// on the PTY so any in-flight blocked Read returns immediately with
+// os.ErrDeadlineExceeded — otherwise the goroutine could wait
+// indefinitely on a PTY that has no pending output and no writer
+// exiting. Best-effort: on platforms where a file type does not
+// support deadlines, SetReadDeadline returns an error we ignore, and
+// the pumpWaitTimeout watchdog in waitPumpExit still bounds the wait.
+func (t *TmuxSession) signalPumpStop(ptmx *os.File) {
+	t.pumpMu.Lock()
+	cancel := t.pumpCancel
+	t.pumpCancel = nil
+	t.pumpMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if ptmx != nil {
+		_ = ptmx.SetReadDeadline(time.Now())
+	}
 }
 
 // setPumpDest changes where the output pump writes to (io.Discard or os.Stdout).
@@ -412,12 +440,13 @@ func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
 
 // CaptureAndProcess captures pane content once and runs both trust prompt
 // and update detection checks, avoiding duplicate CapturePaneContent calls.
-func (t *TmuxSession) CaptureAndProcess() (content string, updated bool, hasPrompt bool, trustHandled bool) {
-	var err error
+// Returns a non-nil err when the pane capture itself failed — callers must
+// surface this instead of treating zero values as "no change", which used
+// to hide tmux failures as a frozen UI.
+func (t *TmuxSession) CaptureAndProcess() (content string, updated bool, hasPrompt bool, trustHandled bool, err error) {
 	content, err = t.CapturePaneContent()
 	if err != nil {
-		log.For("tmux").Error("capture_pane_failed", "session", t.sanitizedName, "err", err)
-		return "", false, false, false
+		return "", false, false, false, fmt.Errorf("capture pane content: %w", err)
 	}
 
 	// Trust prompt detection (from CheckAndHandleTrustPrompt).
@@ -453,7 +482,7 @@ func (t *TmuxSession) CaptureAndProcess() (content string, updated bool, hasProm
 		updated = true
 	}
 
-	return content, updated, hasPrompt, trustHandled
+	return content, updated, hasPrompt, trustHandled, nil
 }
 
 // GetContentHash returns the last computed content hash from HasUpdated
@@ -480,6 +509,7 @@ func (t *TmuxSession) FullScreenAttachCmd() *exec.Cmd {
 // session during the attach. ResumePreview re-opens the PTY afterwards.
 func (t *TmuxSession) PausePreview() error {
 	if t.ptmx != nil {
+		t.signalPumpStop(t.ptmx)
 		if err := t.ptmx.Close(); err != nil {
 			return fmt.Errorf("error closing preview PTY: %w", err)
 		}
@@ -502,6 +532,7 @@ func (t *TmuxSession) Close() error {
 	var errs []error
 
 	if t.ptmx != nil {
+		t.signalPumpStop(t.ptmx)
 		if err := t.ptmx.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("error closing PTY: %w", err))
 		}

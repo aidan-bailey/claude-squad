@@ -2,6 +2,7 @@ package git
 
 import (
 	"claude-squad/log"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,7 +14,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	log.Initialize("", false)
+	_ = log.Initialize("", false)
 	defer log.Close()
 	os.Exit(m.Run())
 }
@@ -106,4 +107,48 @@ func TestCleanupWorktrees_EmptyDirectoryNoError(t *testing.T) {
 
 	err := CleanupWorktrees(configDir, nil)
 	assert.NoError(t, err)
+}
+
+// TestIsWorktreeAbsentErr validates that absent-worktree errors are
+// classified correctly. These are the messages git produces when we
+// try to remove a worktree that isn't registered — the expected no-op
+// case during pre-setup cleanup. Any unrecognized message must fall
+// through so operators see the real failure (locked index, etc).
+func TestIsWorktreeAbsentErr(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"not a working tree", errors.New("git command failed: fatal: 'foo' is not a working tree (exit status 128)"), true},
+		{"no such file", errors.New("git command failed: fatal: No such file or directory"), true},
+		{"permission denied", errors.New("git command failed: fatal: Permission denied"), false},
+		{"lockfile", errors.New("git command failed: Unable to create 'index.lock': File exists"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isWorktreeAbsentErr(tc.err))
+		})
+	}
+}
+
+// TestIsBranchAbsentErr validates that absent-branch errors are
+// classified correctly. Non-absent failures (branch checked out
+// elsewhere, etc.) must return false so they get logged.
+func TestIsBranchAbsentErr(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"branch not found", errors.New("git command failed: error: branch 'foo' not found."), true},
+		{"checked out in worktree", errors.New("git command failed: error: Cannot delete branch 'foo' checked out at 'bar'"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isBranchAbsentErr(tc.err))
+		})
+	}
 }

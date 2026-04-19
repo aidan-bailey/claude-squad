@@ -41,7 +41,10 @@ var statusLineStyle = lipgloss.NewStyle().
 // noScripts disables loading of ~/.claude-squad/scripts (embedded
 // defaults still load).
 func Run(ctx context.Context, wsCtx *config.WorkspaceContext, registry *config.WorkspaceRegistry, appConfig *config.Config, program string, autoYes bool, pendingDir string, noScripts bool) error {
-	h := newHome(ctx, wsCtx, registry, appConfig, program, autoYes, pendingDir, noScripts)
+	h, err := newHome(ctx, wsCtx, registry, appConfig, program, autoYes, pendingDir, noScripts)
+	if err != nil {
+		return err
+	}
 	// Shutdown hook: drain any suspended script coroutines then close
 	// the Lua state. The engine's "every coroutine gets resumed" contract
 	// would otherwise be violated on process exit — including on the
@@ -58,18 +61,19 @@ func Run(ctx context.Context, wsCtx *config.WorkspaceContext, registry *config.W
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(), // Mouse scroll
 	)
-	_, err := p.Run()
+	_, err = p.Run()
 	return err
 }
 
 // metadataResult holds I/O results for one instance from the parallel
 // metadata tick. Written by goroutine; status updates applied on main thread.
 type metadataResult struct {
-	instance  *session.Instance
-	tmuxAlive bool
-	updated   bool
-	hasPrompt bool
-	diffErr   error
+	instance   *session.Instance
+	tmuxAlive  bool
+	updated    bool
+	hasPrompt  bool
+	captureErr error
+	diffErr    error
 }
 
 type state int
@@ -213,7 +217,7 @@ type home struct {
 	skipScripts bool
 }
 
-func newHome(ctx context.Context, wsCtx *config.WorkspaceContext, registry *config.WorkspaceRegistry, appConfig *config.Config, program string, autoYes bool, pendingDir string, noScripts bool) *home {
+func newHome(ctx context.Context, wsCtx *config.WorkspaceContext, registry *config.WorkspaceRegistry, appConfig *config.Config, program string, autoYes bool, pendingDir string, noScripts bool) (*home, error) {
 	cfgDir := ""
 	if wsCtx != nil {
 		cfgDir = wsCtx.ConfigDir
@@ -223,8 +227,7 @@ func newHome(ctx context.Context, wsCtx *config.WorkspaceContext, registry *conf
 
 	storage, err := session.NewStorage(appState, cfgDir)
 	if err != nil {
-		fmt.Printf("Failed to initialize storage: %v\n", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("initialize storage: %w", err)
 	}
 
 	h := &home{
@@ -267,8 +270,7 @@ func newHome(ctx context.Context, wsCtx *config.WorkspaceContext, registry *conf
 	if !willRestoreSlots {
 		instancesData, err := storage.LoadInstanceData()
 		if err != nil {
-			fmt.Printf("Failed to load instances: %v\n", err)
-			os.Exit(1)
+			return nil, fmt.Errorf("load instances: %w", err)
 		}
 
 		// Reconcile each instance against tmux/worktree reality
@@ -369,7 +371,7 @@ func newHome(ctx context.Context, wsCtx *config.WorkspaceContext, registry *conf
 		h.state = stateWorkspace
 	}
 
-	return h
+	return h, nil
 }
 
 // restoreSavedWorkspaces activates all workspaces in `saved` as slots, merging
@@ -621,6 +623,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						log.For("app").Warn("tick.transition_failed", "instance", r.instance.Title, "to", "Ready", "err", err.Error())
 					}
 				}
+			}
+			if r.captureErr != nil {
+				log.WarnKV("app.tick.capture_failed", "instance", r.instance.Title, "err", r.captureErr.Error())
 			}
 			if r.diffErr != nil {
 				log.For("app").Warn("diff_stats_update_failed", "err", r.diffErr)
@@ -1160,7 +1165,7 @@ func gatherMetadataCmd(active []*session.Instance, selected *session.Instance) t
 					return
 				}
 
-				r.updated, r.hasPrompt = instance.CaptureAndProcessStatus()
+				r.updated, r.hasPrompt, r.captureErr = instance.CaptureAndProcessStatus()
 
 				wantFull := instance == selected
 				if !instance.ShouldRefreshDiff(r.updated, wantFull) {
