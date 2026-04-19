@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -63,6 +64,29 @@ func TestInstance_KillIsIdempotent(t *testing.T) {
 
 	assert.False(t, inst.isStarted(), "Kill should clear the started flag")
 	assert.Nil(t, inst.getTmuxSession(), "Kill should nil out the tmux session")
+}
+
+// TestInstance_KillBoundedWithStuckPump is the Instance-level
+// regression guard for F3+F7. A stuck pump goroutine inside TmuxSession
+// used to propagate into an unbounded wait in Close → Kill → Pause,
+// wedging the UI flow that triggered the op and — via the daemon's
+// UpdateDiffStats path — every other tracked instance. With the
+// bounded pump wait in tmux, Kill must complete within a reasonable
+// budget even when the pump never exits.
+func TestInstance_KillBoundedWithStuckPump(t *testing.T) {
+	inst := newTestStartedInstance(t)
+	inst.getTmuxSession().SimulateStuckPumpForTest()
+
+	done := make(chan error, 1)
+	go func() { done <- inst.Kill() }()
+
+	select {
+	case <-done:
+		// Kill returned; assertion elsewhere (no error is OK — tmux
+		// Close logs but does not fail on the abandoned pump path).
+	case <-time.After(5 * time.Second):
+		t.Fatal("Kill blocked on stuck pump — F3 bounded wait regressed")
+	}
 }
 
 // TestInstance_StartIsIdempotent verifies Start is a no-op on an
