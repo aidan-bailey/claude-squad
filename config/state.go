@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"claude-squad/log"
 	"encoding/json"
 	"fmt"
@@ -47,6 +48,15 @@ type State struct {
 	// configDir, when set, directs SaveState to write to this directory
 	// instead of GetConfigDir(). Set by LoadStateFrom for workspace isolation.
 	configDir string
+	// lastWritten caches the bytes of the most recent successful write so
+	// identical subsequent saves can skip AtomicWriteFile. Bubble Tea saves
+	// the full state on every user action (pause, resume, help-seen), but
+	// many of those produce byte-identical JSON — e.g. help flags toggled
+	// twice, or reconcile flipping a transient status back. Saves run from
+	// the UI goroutine, so no locking is needed here. The cache is keyed to
+	// this *State instance, not to a path; callers that save the same State
+	// to multiple directories must use separate *State objects.
+	lastWritten []byte
 }
 
 // DefaultState returns the default state
@@ -111,7 +121,14 @@ func SaveState(state *State) error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	return AtomicWriteFile(statePath, data, 0644)
+	if bytes.Equal(state.lastWritten, data) {
+		return nil
+	}
+	if err := AtomicWriteFile(statePath, data, 0644); err != nil {
+		return err
+	}
+	state.lastWritten = data
+	return nil
 }
 
 // LoadStateFromGlobal loads state from the global config directory.
@@ -172,7 +189,14 @@ func SaveStateTo(state *State, dir string) error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	return AtomicWriteFile(statePath, data, 0644)
+	if bytes.Equal(state.lastWritten, data) {
+		return nil
+	}
+	if err := AtomicWriteFile(statePath, data, 0644); err != nil {
+		return err
+	}
+	state.lastWritten = data
+	return nil
 }
 
 // InstanceStorage interface implementation

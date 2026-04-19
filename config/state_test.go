@@ -76,3 +76,35 @@ func TestState_SetHelpScreensSeenPersists(t *testing.T) {
 	reloaded := LoadStateFrom(dir)
 	assert.Equal(t, uint32(42), reloaded.HelpScreensSeen)
 }
+
+// TestSaveStateTo_SkipsWriteWhenUnchanged verifies the byte-comparison
+// short-circuit: identical back-to-back saves must not rewrite the file
+// (AtomicWriteFile renames through a new inode, so we detect writes via
+// os.SameFile). A state mutation in between must still trigger a write.
+func TestSaveStateTo_SkipsWriteWhenUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	state := &State{HelpScreensSeen: 1, InstancesData: json.RawMessage(`[]`)}
+
+	require := func(cond bool, msg string) {
+		t.Helper()
+		if !cond {
+			t.Fatal(msg)
+		}
+	}
+
+	assert.NoError(t, SaveStateTo(state, dir))
+	path := filepath.Join(dir, StateFileName)
+	fi1, err := os.Stat(path)
+	assert.NoError(t, err)
+
+	assert.NoError(t, SaveStateTo(state, dir))
+	fi2, err := os.Stat(path)
+	assert.NoError(t, err)
+	require(os.SameFile(fi1, fi2), "identical save must not rewrite the file")
+
+	state.HelpScreensSeen = 2
+	assert.NoError(t, SaveStateTo(state, dir))
+	fi3, err := os.Stat(path)
+	assert.NoError(t, err)
+	require(!os.SameFile(fi2, fi3), "mutated save must rewrite the file")
+}
