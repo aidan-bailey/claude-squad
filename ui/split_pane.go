@@ -4,6 +4,7 @@ import (
 	"claude-squad/log"
 	"claude-squad/session"
 	"claude-squad/session/tmux"
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -182,6 +183,132 @@ func (s *SplitPane) ScrollDown() {
 	}
 }
 
+// PageUp scrolls the active pane (diff if visible, else focused) up by half a view.
+func (s *SplitPane) PageUp() {
+	if s.diffVisible {
+		s.diff.PageUp()
+		return
+	}
+	switch s.focusedPane {
+	case FocusAgent:
+		if err := s.agent.PageUp(s.instance); err != nil {
+			log.InfoLog.Printf("split pane failed to page agent up: %v", err)
+		}
+	case FocusTerminal:
+		if err := s.terminal.PageUp(); err != nil {
+			log.InfoLog.Printf("split pane failed to page terminal up: %v", err)
+		}
+	}
+}
+
+// PageDown scrolls the active pane down by half a view.
+func (s *SplitPane) PageDown() {
+	if s.diffVisible {
+		s.diff.PageDown()
+		return
+	}
+	switch s.focusedPane {
+	case FocusAgent:
+		if err := s.agent.PageDown(s.instance); err != nil {
+			log.InfoLog.Printf("split pane failed to page agent down: %v", err)
+		}
+	case FocusTerminal:
+		if err := s.terminal.PageDown(); err != nil {
+			log.InfoLog.Printf("split pane failed to page terminal down: %v", err)
+		}
+	}
+}
+
+// GotoTop jumps the active pane to the start of its scrollback.
+func (s *SplitPane) GotoTop() {
+	if s.diffVisible {
+		s.diff.GotoTop()
+		return
+	}
+	switch s.focusedPane {
+	case FocusAgent:
+		if err := s.agent.GotoTop(s.instance); err != nil {
+			log.InfoLog.Printf("split pane failed to goto agent top: %v", err)
+		}
+	case FocusTerminal:
+		if err := s.terminal.GotoTop(); err != nil {
+			log.InfoLog.Printf("split pane failed to goto terminal top: %v", err)
+		}
+	}
+}
+
+// GotoBottom jumps the active pane to the live tail, exiting scroll mode.
+func (s *SplitPane) GotoBottom() {
+	if s.diffVisible {
+		s.diff.GotoBottom()
+		return
+	}
+	switch s.focusedPane {
+	case FocusAgent:
+		if err := s.agent.GotoBottom(s.instance); err != nil {
+			log.InfoLog.Printf("split pane failed to goto agent bottom: %v", err)
+		}
+	case FocusTerminal:
+		s.terminal.GotoBottom()
+	}
+}
+
+// ScrollAgentUp scrolls the agent pane explicitly, ignoring focus/diff.
+func (s *SplitPane) ScrollAgentUp() {
+	if err := s.agent.ScrollUp(s.instance); err != nil {
+		log.InfoLog.Printf("split pane failed to scroll agent up: %v", err)
+	}
+}
+
+// ScrollAgentDown scrolls the agent pane explicitly.
+func (s *SplitPane) ScrollAgentDown() {
+	if err := s.agent.ScrollDown(s.instance); err != nil {
+		log.InfoLog.Printf("split pane failed to scroll agent down: %v", err)
+	}
+}
+
+// ScrollTerminalUp scrolls the terminal pane explicitly.
+func (s *SplitPane) ScrollTerminalUp() {
+	if err := s.terminal.ScrollUp(); err != nil {
+		log.InfoLog.Printf("split pane failed to scroll terminal up: %v", err)
+	}
+}
+
+// ScrollTerminalDown scrolls the terminal pane explicitly.
+func (s *SplitPane) ScrollTerminalDown() {
+	if err := s.terminal.ScrollDown(); err != nil {
+		log.InfoLog.Printf("split pane failed to scroll terminal down: %v", err)
+	}
+}
+
+// PageTerminalUp pages the terminal pane explicitly.
+func (s *SplitPane) PageTerminalUp() {
+	if err := s.terminal.PageUp(); err != nil {
+		log.InfoLog.Printf("split pane failed to page terminal up: %v", err)
+	}
+}
+
+// PageTerminalDown pages the terminal pane explicitly.
+func (s *SplitPane) PageTerminalDown() {
+	if err := s.terminal.PageDown(); err != nil {
+		log.InfoLog.Printf("split pane failed to page terminal down: %v", err)
+	}
+}
+
+// ScrollDiffUp scrolls the diff overlay explicitly (no-op if not visible).
+func (s *SplitPane) ScrollDiffUp() {
+	if s.diffVisible {
+		s.diff.ScrollUp()
+	}
+}
+
+// ScrollDiffDown scrolls the diff overlay explicitly (no-op if not visible).
+func (s *SplitPane) ScrollDiffDown() {
+	if s.diffVisible {
+		s.diff.ScrollDown()
+	}
+}
+
 // IsAgentInScrollMode returns true if the agent pane is in scroll mode.
 func (s *SplitPane) IsAgentInScrollMode() bool {
 	return s.agent.isScrolling
@@ -236,7 +363,7 @@ func (s *SplitPane) String() string {
 		borderH := focusedPaneBodyBorder.GetHorizontalFrameSize()
 		contentWidth := s.width - borderH
 		diffContent := s.diff.String()
-		topLine := s.buildTopBorder(" Diff (d/Esc to close) ", true)
+		topLine := s.buildTopBorder(diffTitle(s.diff.ScrollPercent()), true)
 		body := focusedPaneBodyBorder.
 			Width(contentWidth).
 			Height(s.height - 1 - bodyBorderV). // -1 for top line
@@ -245,10 +372,39 @@ func (s *SplitPane) String() string {
 	}
 
 	showFocus := s.inlineAttach
-	agentBox := s.renderPane(" Agent ", s.agent.String(), s.agent.height, showFocus && s.focusedPane == FocusAgent)
-	terminalBox := s.renderPane(" Terminal ", s.terminal.String(), s.terminal.height, showFocus && s.focusedPane == FocusTerminal)
+	agentTitle := " Agent" + scrollSuffix(s.agent.ScrollPercent()) + " "
+	terminalTitle := " Terminal" + scrollSuffix(s.terminal.ScrollPercent()) + " "
+	agentBox := s.renderPane(agentTitle, s.agent.String(), s.agent.height, showFocus && s.focusedPane == FocusAgent)
+	terminalBox := s.renderPane(terminalTitle, s.terminal.String(), s.terminal.height, showFocus && s.focusedPane == FocusTerminal)
 
 	return lipgloss.JoinVertical(lipgloss.Left, agentBox, terminalBox)
+}
+
+// scrollSuffix returns " (NN% ↑)" when the pane is scrolled back from
+// the bottom, or "" when at the bottom (= live tail for agent/terminal).
+// Agent/terminal panes return 1.0 whenever they're not in scroll mode,
+// so the suffix is only emitted during active review of past output.
+func scrollSuffix(percent float64) string {
+	if percent >= 1.0 {
+		return ""
+	}
+	if percent < 0 {
+		percent = 0
+	}
+	return fmt.Sprintf(" (%d%% ↑)", int(percent*100))
+}
+
+// diffTitle composes the diff overlay's title with an optional scroll
+// indicator. The close hint always stays on; the percentage slots in
+// just before it when scrolled: " Diff (42% ↑ · d/Esc to close) ".
+func diffTitle(percent float64) string {
+	if percent >= 1.0 {
+		return " Diff (d/Esc to close) "
+	}
+	if percent < 0 {
+		percent = 0
+	}
+	return fmt.Sprintf(" Diff (%d%% ↑ · d/Esc to close) ", int(percent*100))
 }
 
 // renderPane wraps content in a bordered box with the title embedded in the top border line.
