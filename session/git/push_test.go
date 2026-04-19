@@ -21,6 +21,14 @@ import (
 // runs under a freshly-minted context rather than the one already spent
 // on the failed gh sync.
 func TestPushChanges_FallbackUsesFreshContext(t *testing.T) {
+	// checkGHCLI calls exec.LookPath("gh") directly — outside the mocked
+	// CommandRunner — so environments without gh on PATH (e.g. the Nix
+	// build sandbox) fail the precondition before any mocked command
+	// runs. Skip rather than fail: this test exercises context plumbing,
+	// not gh availability.
+	if _, err := exec.LookPath("gh"); err != nil {
+		t.Skip("gh CLI not on PATH; skipping")
+	}
 	var mu sync.Mutex
 	var ghSyncSourceCtx context.Context
 	var gitPushCtx context.Context
