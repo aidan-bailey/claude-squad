@@ -2,9 +2,11 @@ package script
 
 import (
 	"claude-squad/log"
+	"context"
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	lua "github.com/yuin/gopher-lua"
 )
@@ -159,7 +161,11 @@ func (e *Engine) HasAction(key string) bool {
 // Returns (matched, err). matched=false means no script owns this
 // key; matched=true err=nil is a success; matched=true err!=nil is a
 // runtime script error the caller should surface.
-func (e *Engine) Dispatch(key string, h Host) (matched bool, err error) {
+//
+// ctx carries an optional trace ID (see log.WithTrace) — when
+// present it is emitted on every DebugKV record the handler produces,
+// so the whole dispatch is greppable by one trace ID.
+func (e *Engine) Dispatch(ctx context.Context, key string, h Host) (matched bool, err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -167,7 +173,12 @@ func (e *Engine) Dispatch(key string, h Host) (matched bool, err error) {
 	if !ok {
 		return false, nil
 	}
-	return true, e.runAction(act, h)
+	trace := log.TraceID(ctx)
+	start := time.Now()
+	log.DebugKV("script.handler.begin", "trace", trace, "key", key, "file", act.file)
+	err = e.runAction(act, h)
+	log.DebugKV("script.handler.end", "trace", trace, "key", key, "duration_ms", time.Since(start).Milliseconds(), "err", errString(err))
+	return true, err
 }
 
 // track registers co under id as a suspended coroutine awaiting a
@@ -189,7 +200,7 @@ func (e *Engine) track(id IntentID, co *lua.LState) {
 // the window between "curHost = h" and the coroutine actually using
 // it. The resume body runs via resumeLocked, not Resume, to avoid
 // double-locking.
-func (e *Engine) ResumeWithHost(id IntentID, h Host) error {
+func (e *Engine) ResumeWithHost(ctx context.Context, id IntentID, h Host) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -197,8 +208,24 @@ func (e *Engine) ResumeWithHost(id IntentID, h Host) error {
 	e.curHost = h
 	defer func() { e.curHost = prevHost }()
 
+	trace := log.TraceID(ctx)
+	log.DebugKV("script.handler.resume", "trace", trace, "intent_id", int(id))
 	_, err := e.resumeLocked(id, lua.LNil)
+	if err != nil {
+		log.DebugKV("script.handler.resume_err", "trace", trace, "intent_id", int(id), "err", err.Error())
+	}
 	return err
+}
+
+// errString formats err for DebugKV attributes. Returns "" for nil so
+// the attribute appears as `err=` in text mode and `"err":""` in JSON,
+// both of which are trivial to grep-out while still showing failed
+// records inline.
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // Resume wakes the coroutine registered under id with value. If the

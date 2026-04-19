@@ -1,6 +1,7 @@
 package script
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -33,7 +34,7 @@ func TestCsBindOverridesExisting(t *testing.T) {
 	require.NoError(t, e.L.DoString(`cs.bind("x", function() _G.second = true end)`))
 	e.EndLoad()
 
-	_, err := e.Dispatch("x", &fakeHost{})
+	_, err := e.Dispatch(context.Background(), "x", &fakeHost{})
 	require.NoError(t, err)
 	assert.Equal(t, "nil", e.L.GetGlobal("first").String())
 	assert.Equal(t, "true", e.L.GetGlobal("second").String())
@@ -83,7 +84,7 @@ func TestCsBindCoroutineCanAwait(t *testing.T) {
 	}))
 	e.EndLoad()
 
-	_, err := e.Dispatch("x", h)
+	_, err := e.Dispatch(context.Background(), "x", h)
 	require.NoError(t, err)
 	// After dispatch the coroutine should still be waiting on id.
 	require.Len(t, h.enqueuedIDs, 1)
