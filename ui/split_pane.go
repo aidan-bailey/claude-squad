@@ -4,6 +4,7 @@ import (
 	"claude-squad/log"
 	"claude-squad/session"
 	"claude-squad/session/tmux"
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -362,7 +363,7 @@ func (s *SplitPane) String() string {
 		borderH := focusedPaneBodyBorder.GetHorizontalFrameSize()
 		contentWidth := s.width - borderH
 		diffContent := s.diff.String()
-		topLine := s.buildTopBorder(" Diff (d/Esc to close) ", true)
+		topLine := s.buildTopBorder(diffTitle(s.diff.ScrollPercent()), true)
 		body := focusedPaneBodyBorder.
 			Width(contentWidth).
 			Height(s.height - 1 - bodyBorderV). // -1 for top line
@@ -371,10 +372,39 @@ func (s *SplitPane) String() string {
 	}
 
 	showFocus := s.inlineAttach
-	agentBox := s.renderPane(" Agent ", s.agent.String(), s.agent.height, showFocus && s.focusedPane == FocusAgent)
-	terminalBox := s.renderPane(" Terminal ", s.terminal.String(), s.terminal.height, showFocus && s.focusedPane == FocusTerminal)
+	agentTitle := " Agent" + scrollSuffix(s.agent.ScrollPercent()) + " "
+	terminalTitle := " Terminal" + scrollSuffix(s.terminal.ScrollPercent()) + " "
+	agentBox := s.renderPane(agentTitle, s.agent.String(), s.agent.height, showFocus && s.focusedPane == FocusAgent)
+	terminalBox := s.renderPane(terminalTitle, s.terminal.String(), s.terminal.height, showFocus && s.focusedPane == FocusTerminal)
 
 	return lipgloss.JoinVertical(lipgloss.Left, agentBox, terminalBox)
+}
+
+// scrollSuffix returns " (NN% ↑)" when the pane is scrolled back from
+// the bottom, or "" when at the bottom (= live tail for agent/terminal).
+// Agent/terminal panes return 1.0 whenever they're not in scroll mode,
+// so the suffix is only emitted during active review of past output.
+func scrollSuffix(percent float64) string {
+	if percent >= 1.0 {
+		return ""
+	}
+	if percent < 0 {
+		percent = 0
+	}
+	return fmt.Sprintf(" (%d%% ↑)", int(percent*100))
+}
+
+// diffTitle composes the diff overlay's title with an optional scroll
+// indicator. The close hint always stays on; the percentage slots in
+// just before it when scrolled: " Diff (42% ↑ · d/Esc to close) ".
+func diffTitle(percent float64) string {
+	if percent >= 1.0 {
+		return " Diff (d/Esc to close) "
+	}
+	if percent < 0 {
+		percent = 0
+	}
+	return fmt.Sprintf(" Diff (%d%% ↑ · d/Esc to close) ", int(percent*100))
 }
 
 // renderPane wraps content in a bordered box with the title embedded in the top border line.
