@@ -22,17 +22,44 @@ import (
 // instance. Declared as var (not const) so tests can shorten it.
 var tickInstanceTimeout = 5 * time.Second
 
-// runWithTimeout runs work in a goroutine and returns when either the
-// work completes or tickInstanceTimeout elapses. On timeout the
-// goroutine is intentionally leaked — the thing wedging it (a hung
-// ptmx capture, a git lockfile) will likely keep it hung regardless
-// of how we cancel, but isolating the wedge to one goroutine lets
-// the daemon continue serving every other instance. Logging is rate-
-// limited via everyN so a persistently stuck session does not spam
-// the log.
-func runWithTimeout(title string, work func(), everyN *log.Every) {
+// daemonPool bounds the total number of in-flight per-tick goroutines
+// across the daemon's lifetime. Wedged goroutines (hung tmux captures,
+// git lockfiles, etc.) are still abandoned on timeout, but the pool
+// slot is held until work() actually returns — so a persistent wedge
+// surfaces as back-pressure (pool saturation) rather than unbounded
+// goroutine growth, which was the pre-fix failure mode where every
+// tick leaked another goroutine for the same wedged instance.
+type daemonPool struct {
+	sem chan struct{}
+	wg  sync.WaitGroup
+}
+
+func newDaemonPool(capacity int) *daemonPool {
+	if capacity < 1 {
+		capacity = 1
+	}
+	return &daemonPool{sem: make(chan struct{}, capacity)}
+}
+
+// runWithTimeout runs work in a pooled goroutine and returns when
+// either the work completes or tickInstanceTimeout elapses. If the
+// pool is saturated (every slot held by in-flight wedged work from
+// prior ticks) the instance is skipped this tick — rate-limited via
+// everyN so a persistent saturation does not spam the log.
+func (p *daemonPool) runWithTimeout(title string, work func(), everyN *log.Every) {
+	select {
+	case p.sem <- struct{}{}:
+	default:
+		if everyN.ShouldLog() {
+			log.WarnKV("daemon.pool_saturated", "component", "daemon", "instance", title)
+		}
+		return
+	}
+	p.wg.Add(1)
 	done := make(chan struct{})
 	go func() {
+		defer p.wg.Done()
+		defer func() { <-p.sem }()
 		defer close(done)
 		work()
 	}()
@@ -42,6 +69,22 @@ func runWithTimeout(title string, work func(), everyN *log.Every) {
 		if everyN.ShouldLog() {
 			log.WarningLog.Printf("daemon tick for %s exceeded %s; skipping", title, tickInstanceTimeout)
 		}
+	}
+}
+
+// drain waits up to d for all in-flight pool goroutines to finish.
+// Used on daemon shutdown so exit stays prompt even under a persistent
+// wedge (the wedged goroutine is still leaked — nothing the daemon can
+// do about that — but shutdown does not hang waiting for it).
+func (p *daemonPool) drain(d time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		p.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
 	}
 }
 
@@ -182,6 +225,14 @@ func RunDaemon(cfg *config.Config, wsCtx *config.WorkspaceContext) error {
 	// across ticks so we do not re-spawn a PTY every poll (DAEMON-05).
 	tracked := map[string]*session.Instance{}
 
+	// Pool capacity is 2 * autoYesMaxConcurrent: enough for one tick's
+	// worth of work (up to autoYesMaxConcurrent) plus a prior tick's
+	// wedged goroutines that have not yet returned. Beyond that, the
+	// daemon sheds load by skipping saturated instances for a tick —
+	// the alternative (the pre-fix behaviour) was unbounded goroutine
+	// growth per wedged session.
+	pool := newDaemonPool(2 * autoYesMaxConcurrent)
+
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
 	stopCh := make(chan struct{})
@@ -205,7 +256,7 @@ func RunDaemon(cfg *config.Config, wsCtx *config.WorkspaceContext) error {
 			var fired atomic.Int32
 			runBoundedParallel(len(eligible), autoYesMaxConcurrent, func(i int) {
 				instance := eligible[i]
-				runWithTimeout(instance.Title, func() {
+				pool.runWithTimeout(instance.Title, func() {
 					if _, hasPrompt := instance.HasUpdated(); hasPrompt {
 						dlog.Debug("daemon.autoyes.fire", "instance", instance.Title)
 						instance.TapEnter()
@@ -242,6 +293,11 @@ func RunDaemon(cfg *config.Config, wsCtx *config.WorkspaceContext) error {
 	// Stop the goroutine so we don't race.
 	close(stopCh)
 	wg.Wait()
+
+	// Drain in-flight pool work so shutdown stays prompt under a
+	// persistent wedge. After the drain budget, any still-running
+	// goroutine is abandoned (process exit reclaims them anyway).
+	pool.drain(2 * tickInstanceTimeout)
 
 	// NOTE: we do NOT call storage.SaveInstances here. The daemon is
 	// strictly a read-only client of state.json; the main app is the

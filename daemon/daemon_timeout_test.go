@@ -14,8 +14,9 @@ import (
 // daemon and must not accrue latency.
 func TestRunWithTimeoutFastWorkReturns(t *testing.T) {
 	everyN := log.NewEvery(time.Second)
+	pool := newDaemonPool(4)
 	start := time.Now()
-	runWithTimeout("fast", func() {}, everyN)
+	pool.runWithTimeout("fast", func() {}, everyN)
 	elapsed := time.Since(start)
 	require.Less(t, elapsed, 100*time.Millisecond,
 		"fast work must not wait for the timeout, got %s", elapsed)
@@ -33,11 +34,12 @@ func TestRunWithTimeoutHangingWorkIsBounded(t *testing.T) {
 	defer func() { tickInstanceTimeout = original }()
 
 	everyN := log.NewEvery(time.Second)
+	pool := newDaemonPool(4)
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 
 	start := time.Now()
-	runWithTimeout("stuck", func() { <-release }, everyN)
+	pool.runWithTimeout("stuck", func() { <-release }, everyN)
 	elapsed := time.Since(start)
 
 	require.GreaterOrEqual(t, elapsed, 50*time.Millisecond,
