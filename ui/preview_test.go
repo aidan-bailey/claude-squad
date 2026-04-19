@@ -387,3 +387,104 @@ func max(a, b int) int {
 	}
 	return b
 }
+
+// setupPreviewScrollTest builds a PreviewPane + live instance whose
+// PreviewFullHistory() resolves to a 100-line buffer. Each of the
+// pane-level scroll tests below asserts the isScrolling transition
+// for one method; the scroll-mode-entry path (capture history, seed
+// viewport, set isScrolling) is the same helper under all of them,
+// so covering one motion per direction is sufficient.
+func setupPreviewScrollTest(t *testing.T) (*PreviewPane, *session.Instance, func()) {
+	t.Helper()
+
+	const numLines = 100
+	lines := make([]string, numLines+1)
+	lines[0] = "$ seq 100"
+	for i := 1; i <= numLines; i++ {
+		lines[i] = fmt.Sprintf("%d", i)
+	}
+	fullContent := strings.Join(lines, "\n")
+
+	sessionCreated := false
+	cmdExec := cmd_test.MockCmdExec{
+		RunFunc: func(cmd *exec.Cmd) error {
+			cmdStr := cmd.String()
+			if strings.Contains(cmdStr, "has-session") {
+				if sessionCreated {
+					return nil
+				}
+				return fmt.Errorf("session does not exist")
+			}
+			if strings.Contains(cmdStr, "new-session") {
+				sessionCreated = true
+				return nil
+			}
+			return nil
+		},
+		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) {
+			cmdStr := cmd.String()
+			if strings.Contains(cmdStr, "capture-pane") {
+				// -S - signals a full-history capture (PreviewFullHistory).
+				if strings.Contains(cmdStr, "-S -") {
+					return []byte(fullContent), nil
+				}
+				return []byte(strings.Join(lines[numLines-20:], "\n")), nil
+			}
+			return []byte(""), nil
+		},
+	}
+
+	setup := setupTestEnvironment(t, cmdExec)
+	pane := NewPreviewPane()
+	pane.SetSize(80, 30)
+	return pane, setup.instance, setup.cleanupFn
+}
+
+func TestPreviewPageUpEntersScrollMode(t *testing.T) {
+	pane, inst, cleanup := setupPreviewScrollTest(t)
+	defer cleanup()
+
+	require.False(t, pane.isScrolling, "pane starts in live-tail mode")
+	require.NoError(t, pane.PageUp(inst))
+	require.True(t, pane.isScrolling, "PageUp must seed viewport and enter scroll mode")
+}
+
+func TestPreviewGotoTopEntersScrollMode(t *testing.T) {
+	pane, inst, cleanup := setupPreviewScrollTest(t)
+	defer cleanup()
+
+	require.False(t, pane.isScrolling)
+	require.NoError(t, pane.GotoTop(inst))
+	require.True(t, pane.isScrolling, "GotoTop must enter scroll mode to expose history")
+}
+
+func TestPreviewGotoBottomExitsScrollMode(t *testing.T) {
+	pane, inst, cleanup := setupPreviewScrollTest(t)
+	defer cleanup()
+
+	require.NoError(t, pane.PageUp(inst))
+	require.True(t, pane.isScrolling)
+
+	require.NoError(t, pane.GotoBottom(inst))
+	require.False(t, pane.isScrolling,
+		"GotoBottom is the live-tail shortcut; it must exit scroll mode, not scroll within it")
+}
+
+func TestPreviewPageDownNoOpFromNormalMode(t *testing.T) {
+	pane, inst, cleanup := setupPreviewScrollTest(t)
+	defer cleanup()
+
+	require.False(t, pane.isScrolling)
+	require.NoError(t, pane.PageDown(inst))
+	require.False(t, pane.isScrolling,
+		"PageDown from live tail must stay in live tail — scrolling down from bottom is meaningless")
+}
+
+func TestPreviewScrollPercentIs1WhenNotScrolling(t *testing.T) {
+	pane, _, cleanup := setupPreviewScrollTest(t)
+	defer cleanup()
+
+	require.False(t, pane.isScrolling)
+	require.InDelta(t, 1.0, pane.ScrollPercent(), 0.0,
+		"live tail reports 100%% so the title indicator stays clean")
+}

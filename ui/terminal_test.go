@@ -322,6 +322,86 @@ func TestTerminalScrolling(t *testing.T) {
 	tp.mu.Unlock()
 }
 
+// setupTerminalScrollTest builds a TerminalPane with a mock session
+// whose capture-pane returns a 100-line buffer. Each pane-level scroll
+// test below covers one isScrolling transition; the scroll-mode-entry
+// path is shared across PageUp/GotoTop, so one motion per direction
+// is enough to catch regressions in the entry/exit invariants.
+func setupTerminalScrollTest(t *testing.T) (*TerminalPane, *session.Instance, func()) {
+	t.Helper()
+	log.Initialize("", false)
+
+	const numLines = 100
+	lines := make([]string, numLines)
+	for i := range numLines {
+		lines[i] = fmt.Sprintf("line %d", i+1)
+	}
+	fullContent := strings.Join(lines, "\n")
+
+	cmdExec := mockCmdExec(fullContent, true)
+	instance := makeStartedInstance(t, "pane-scroll")
+
+	tp := NewTerminalPane()
+	tp.SetSize(80, 30)
+	ts := newMockTmuxSession(t, "pane-scroll-test", cmdExec)
+	injectSession(tp, instance.Title, ts, t.TempDir())
+
+	cleanup := func() {
+		_ = instance.Kill()
+		log.Close()
+	}
+	return tp, instance, cleanup
+}
+
+func TestTerminalPageUpEntersScrollMode(t *testing.T) {
+	tp, _, cleanup := setupTerminalScrollTest(t)
+	defer cleanup()
+
+	require.False(t, tp.IsScrolling(), "pane starts in live-tail mode")
+	require.NoError(t, tp.PageUp())
+	require.True(t, tp.IsScrolling(), "PageUp must seed viewport and enter scroll mode")
+}
+
+func TestTerminalGotoTopEntersScrollMode(t *testing.T) {
+	tp, _, cleanup := setupTerminalScrollTest(t)
+	defer cleanup()
+
+	require.False(t, tp.IsScrolling())
+	require.NoError(t, tp.GotoTop())
+	require.True(t, tp.IsScrolling(), "GotoTop must enter scroll mode to expose history")
+}
+
+func TestTerminalGotoBottomExitsScrollMode(t *testing.T) {
+	tp, _, cleanup := setupTerminalScrollTest(t)
+	defer cleanup()
+
+	require.NoError(t, tp.PageUp())
+	require.True(t, tp.IsScrolling())
+
+	tp.GotoBottom()
+	require.False(t, tp.IsScrolling(),
+		"GotoBottom is the live-tail shortcut; it must exit scroll mode, not scroll within it")
+}
+
+func TestTerminalPageDownNoOpFromNormalMode(t *testing.T) {
+	tp, _, cleanup := setupTerminalScrollTest(t)
+	defer cleanup()
+
+	require.False(t, tp.IsScrolling())
+	require.NoError(t, tp.PageDown())
+	require.False(t, tp.IsScrolling(),
+		"PageDown from live tail must stay in live tail — scrolling down from bottom is meaningless")
+}
+
+func TestTerminalScrollPercentIs1WhenNotScrolling(t *testing.T) {
+	tp, _, cleanup := setupTerminalScrollTest(t)
+	defer cleanup()
+
+	require.False(t, tp.IsScrolling())
+	require.InDelta(t, 1.0, tp.ScrollPercent(), 0.0,
+		"live tail reports 100%% so the title indicator stays clean")
+}
+
 func TestTerminalDetachSessionForInstance(t *testing.T) {
 	log.Initialize("", false)
 	defer log.Close()
