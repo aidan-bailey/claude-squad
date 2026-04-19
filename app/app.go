@@ -184,6 +184,17 @@ type home struct {
 	lastWidth  int
 	lastHeight int
 
+	// listWidth is the current rendered width of the left list panel
+	// (= int(lastWidth * ListWidthPercent)). Cached for mouse-wheel
+	// hit-testing in the tea.MouseMsg branch.
+	listWidth int
+	// agentBottomY is the screen Y (inclusive) of the last row of the
+	// agent pane's bottom border. Mouse events with Y <= agentBottomY
+	// route to the agent pane; anything greater routes to the terminal
+	// pane. Recomputed on every WindowSizeMsg so the formula stays in
+	// sync with SplitPane.SetSize.
+	agentBottomY int
+
 	// lastPreviewHash caches the content hash of the selected instance
 	// to skip preview ticks when nothing has changed.
 	lastPreviewHash []byte
@@ -445,6 +456,20 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	m.splitPane.SetSize(paneWidth, contentHeight)
 	m.list.SetSize(listWidth, contentHeight)
 
+	// Cache mouse-wheel hit-test anchors. Mirrors SplitPane.SetSize's
+	// own arithmetic — kept in sync here rather than added as a
+	// SplitPane accessor because the mouse handler lives in app/.
+	m.listWidth = listWidth
+	const paneChromePerPane = 2 // 1 top border + 1 bottom border
+	availableHeight := contentHeight - 2*paneChromePerPane
+	if availableHeight < 0 {
+		availableHeight = 0
+	}
+	agentContentHeight := int(float64(availableHeight) * ui.SplitAgentPercent)
+	// Screen-Y inclusive end of the agent's bottom border:
+	//   tabBar + 1 (agent top border) + content + 1 (agent bottom border) - 1
+	m.agentBottomY = m.tabBar.Height() + 1 + agentContentHeight
+
 	if m.activeOverlay != nil {
 		m.activeOverlay.SetSize(
 			int(float32(msg.Width)*ui.OverlayWidthPercent),
@@ -604,19 +629,58 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateTabBarStatuses()
 		return m, tickUpdateMetadataCmd
 	case tea.MouseMsg:
-		// Handle mouse wheel events for scrolling the diff/preview pane
+		// Route mouse-wheel events by cursor position. One wheel tick
+		// moves one line (terminal-emulator convention, not half-page).
+		//
+		// Precedence:
+		//   1. Over the list panel (X < listWidth)  → list cursor.
+		//   2. Diff overlay visible                 → diff viewport.
+		//   3. Over the agent pane (Y <= agentBottomY) → agent.
+		//   4. Otherwise                            → terminal.
+		//
+		// The list case also applies while the user is paused because
+		// it only moves the cursor. The content-pane cases bail early
+		// for paused/missing instances just like the old behavior.
 		if msg.Action == tea.MouseActionPress {
-			if msg.Button == tea.MouseButtonWheelDown || msg.Button == tea.MouseButtonWheelUp {
+			if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
+				// List cursor — works regardless of session state.
+				if m.listWidth > 0 && msg.X < m.listWidth {
+					switch msg.Button {
+					case tea.MouseButtonWheelUp:
+						m.list.Up()
+					case tea.MouseButtonWheelDown:
+						m.list.Down()
+					}
+					return m, m.instanceChanged()
+				}
+
 				selected := m.list.GetSelectedInstance()
 				if selected == nil || selected.GetStatus() == session.Paused {
 					return m, nil
 				}
 
-				switch msg.Button {
-				case tea.MouseButtonWheelUp:
-					m.splitPane.ScrollUp()
-				case tea.MouseButtonWheelDown:
-					m.splitPane.ScrollDown()
+				switch {
+				case m.splitPane.IsDiffVisible():
+					switch msg.Button {
+					case tea.MouseButtonWheelUp:
+						m.splitPane.ScrollDiffUp()
+					case tea.MouseButtonWheelDown:
+						m.splitPane.ScrollDiffDown()
+					}
+				case msg.Y <= m.agentBottomY:
+					switch msg.Button {
+					case tea.MouseButtonWheelUp:
+						m.splitPane.ScrollAgentUp()
+					case tea.MouseButtonWheelDown:
+						m.splitPane.ScrollAgentDown()
+					}
+				default:
+					switch msg.Button {
+					case tea.MouseButtonWheelUp:
+						m.splitPane.ScrollTerminalUp()
+					case tea.MouseButtonWheelDown:
+						m.splitPane.ScrollTerminalDown()
+					}
 				}
 			}
 		}
