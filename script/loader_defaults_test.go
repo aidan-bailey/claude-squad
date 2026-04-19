@@ -1,6 +1,7 @@
 package script
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -46,7 +47,7 @@ func TestUserScriptOverridesDefault(t *testing.T) {
 	e.LoadDefaults()
 	e.Load(dir)
 
-	_, err := e.Dispatch("j", &fakeHost{})
+	_, err := e.Dispatch(context.Background(), "j", &fakeHost{})
 	assert.NoError(t, err)
 	assert.Equal(t, lua.LTrue, e.L.GetGlobal("user_j"))
 }

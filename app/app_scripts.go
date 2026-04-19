@@ -5,7 +5,9 @@ import (
 	"claude-squad/log"
 	"claude-squad/script"
 	"claude-squad/session"
+	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 
@@ -19,20 +21,28 @@ import (
 // handler enqueued (via cs.await(cs.actions.foo())) before yielding
 // — handleScriptDone dispatches each one and the matching runXYZ
 // schedules a scriptResumeMsg when done.
+//
+// trace is the correlation ID minted at key-dispatch time; propagating
+// it through the message lets every downstream log record (intent
+// dispatch, script.error, coroutine resume) share one grep-able
+// identifier.
 type scriptDoneMsg struct {
 	err              error
 	pendingInstances []*session.Instance
 	notices          []string
 	pendingIntents   []pendingIntent
+	trace            string
+	key              string
 }
 
 // scriptResumeMsg feeds a value back into a suspended handler
 // coroutine keyed by id. Carries no Lua-specific state so the app
 // layer stays independent of gopher-lua; the engine resumes with nil
-// internally. Task 11 will emit these from handleScriptIntent after
-// the matching runXYZ completes.
+// internally. trace is the originating dispatch's trace ID so the
+// resumed work continues to correlate with the triggering key press.
 type scriptResumeMsg struct {
-	id script.IntentID
+	id    script.IntentID
+	trace string
 }
 
 // scriptHost adapts *home to the script.Host interface. A fresh
@@ -161,10 +171,13 @@ func (s *scriptHost) WorkspaceNext() {
 }
 
 // pendingIntent ties a caller-provided intent to the id the script
-// awaits on. Task 10 drains this into scriptDoneMsg.
+// awaits on. Task 10 drains this into scriptDoneMsg. trace records the
+// dispatch that produced this intent so handleScriptIntent can log
+// the routing decision under the same ID the earlier dispatch used.
 type pendingIntent struct {
 	id     script.IntentID
 	intent script.Intent
+	trace  string
 }
 
 // drain returns and clears the pending instances, notices, and
@@ -265,14 +278,26 @@ func (m *home) dispatchScript(key string) (tea.Cmd, bool) {
 		return nil, false
 	}
 
+	ctx, trace := log.WithTrace(context.Background())
+	log.DebugKV("script.dispatch", "trace", trace, "key", key)
+
 	return func() tea.Msg {
-		_, err := m.scripts.Dispatch(key, host)
+		_, err := m.scripts.Dispatch(ctx, key, host)
 		pending, notices, intents := host.drain()
+		// Stamp trace on every intent so handleScriptIntent can
+		// log under the same ID. Engine.Dispatch already produced
+		// traced handler.begin/end records; this carries the trace
+		// across the async boundary into the intent-dispatch phase.
+		for i := range intents {
+			intents[i].trace = trace
+		}
 		return scriptDoneMsg{
 			err:              err,
 			pendingInstances: pending,
 			notices:          notices,
 			pendingIntents:   intents,
+			trace:            trace,
+			key:              key,
 		}
 	}, true
 }
@@ -288,6 +313,7 @@ func (m *home) dispatchScript(key string) (tea.Cmd, bool) {
 // through handleQuit to preserve the save-on-exit path the legacy
 // "q" key used.
 func (m *home) handleScriptIntent(p pendingIntent) tea.Cmd {
+	log.DebugKV("script.intent", "trace", p.trace, "intent_id", int(p.id), "kind", fmt.Sprintf("%T", p.intent))
 	var cmd tea.Cmd
 	switch i := p.intent.(type) {
 	case script.QuitIntent:
@@ -366,7 +392,7 @@ func (m *home) handleScriptIntent(p pendingIntent) tea.Cmd {
 			_, cmd = runQuickInputAgent(m)
 		}
 	}
-	resumeCmd := func() tea.Msg { return scriptResumeMsg{id: p.id} }
+	resumeCmd := func() tea.Msg { return scriptResumeMsg{id: p.id, trace: p.trace} }
 	if cmd == nil {
 		return resumeCmd
 	}
@@ -384,14 +410,29 @@ func (m *home) handleScriptResume(msg scriptResumeMsg) tea.Cmd {
 		return nil
 	}
 	host := &scriptHost{m: m}
+	// Re-seed ctx with the same trace the originating dispatch used.
+	// log.WithTrace reuses an existing ID when the ctx already carries
+	// one, but here we're starting from Background, so seed directly
+	// via WithValue-equivalent (WithTrace on an empty ctx + overwrite
+	// would mint a fresh ID). The engine only reads TraceID(ctx), so
+	// an empty-trace resume logs under an empty ID — acceptable and
+	// unusual in practice.
+	ctx := context.Background()
+	if msg.trace != "" {
+		ctx = log.WithValueForTrace(ctx, msg.trace)
+	}
 	return func() tea.Msg {
-		err := m.scripts.ResumeWithHost(msg.id, host)
+		err := m.scripts.ResumeWithHost(ctx, msg.id, host)
 		pending, notices, intents := host.drain()
+		for i := range intents {
+			intents[i].trace = msg.trace
+		}
 		return scriptDoneMsg{
 			err:              err,
 			pendingInstances: pending,
 			notices:          notices,
 			pendingIntents:   intents,
+			trace:            msg.trace,
 		}
 	}
 }
@@ -417,6 +458,13 @@ func (m *home) handleScriptDone(msg scriptDoneMsg) tea.Cmd {
 		cmds = append(cmds, m.handleError(errors.New(n)))
 	}
 	if msg.err != nil {
+		// Route the error to BOTH the TUI error bar and the log
+		// file. Historically script errors only reached the error
+		// bar (which auto-clears on a 3s schedule), so a failure
+		// the user didn't happen to be watching vanished without
+		// trace. The KV form lets a post-mortem grep by trace ID
+		// to rebuild the full dispatch chain.
+		log.ErrorKV("script.error", "trace", msg.trace, "key", msg.key, "err", msg.err.Error())
 		cmds = append(cmds, m.handleError(msg.err))
 	}
 	cmds = append(cmds, m.instanceChanged())

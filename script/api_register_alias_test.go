@@ -1,6 +1,7 @@
 package script
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -47,7 +48,7 @@ func TestRegisterActionPreconditionGatesRun(t *testing.T) {
 	assert.NoError(t, err)
 	e.EndLoad()
 
-	matched, err := e.Dispatch("z", &fakeHost{})
+	matched, err := e.Dispatch(context.Background(), "z", &fakeHost{})
 	assert.True(t, matched)
 	assert.NoError(t, err)
 	assert.Equal(t, lua.LFalse, e.L.GetGlobal("ran"))

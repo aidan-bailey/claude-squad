@@ -95,7 +95,17 @@ func newTmuxSession(name string, program string, ptyFactory PtyFactory, cmdExec 
 
 // Start creates and starts a new tmux session, then attaches to it. Program is the command to run in
 // the session (ex. claude). workdir is the git worktree directory.
-func (t *TmuxSession) Start(workDir string) error {
+func (t *TmuxSession) Start(workDir string) (err error) {
+	t0 := time.Now()
+	log.DebugKV("tmux.start.begin", "session", t.sanitizedName, "program", t.program, "workdir", workDir)
+	defer func() {
+		args := []any{"session", t.sanitizedName, "duration_ms", time.Since(t0).Milliseconds()}
+		if err != nil {
+			args = append(args, "err", err.Error())
+		}
+		log.DebugKV("tmux.start.end", args...)
+	}()
+
 	// Check if the session already exists
 	if t.DoesSessionExist() {
 		return fmt.Errorf("tmux session already exists: %s", t.sanitizedName)
@@ -212,6 +222,7 @@ func (t *TmuxSession) CheckAndHandleTrustPrompt() bool {
 // buffer deadlock (the tmux client blocks on stdout when the buffer fills,
 // which also blocks stdin processing).
 func (t *TmuxSession) Restore() error {
+	log.DebugKV("tmux.restore", "session", t.sanitizedName)
 	// Close any prior PTY and wait for its pump to exit before creating a new
 	// one, otherwise the old pump goroutine leaks and keeps a stale FD alive.
 	if t.ptmx != nil {
@@ -448,6 +459,7 @@ func (t *TmuxSession) ResumePreview() error {
 
 // Close terminates the tmux session and cleans up resources
 func (t *TmuxSession) Close() error {
+	log.DebugKV("tmux.close", "session", t.sanitizedName)
 	var errs []error
 
 	if t.ptmx != nil {

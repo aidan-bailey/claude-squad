@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -141,6 +142,12 @@ type Instance struct {
 	// helpers below. Do not read or write these fields directly from
 	// outside the locked accessors.
 	mu sync.RWMutex
+
+	// logger is a per-instance slog.Logger pre-tagged with
+	// subsystem=instance and title. Populated by NewInstance and
+	// FromInstanceData; tests that build Instance directly are covered
+	// by the getLogger() fallback.
+	logger *slog.Logger
 }
 
 // Snapshot returns a serialization-safe copy of every Instance field
@@ -220,6 +227,7 @@ func FromInstanceData(data InstanceData, configDir string) (*Instance, error) {
 		AutoYes:             data.AutoYes,
 		ConfigDir:           configDir,
 		IsWorkspaceTerminal: data.IsWorkspaceTerminal,
+		logger:              log.For("instance", "title", data.Title),
 	}
 
 	// Workspace terminals don't use git worktrees
@@ -307,6 +315,7 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		selectedBranch:      opts.Branch,
 		ConfigDir:           opts.ConfigDir,
 		IsWorkspaceTerminal: opts.IsWorkspaceTerminal,
+		logger:              log.For("instance", "title", opts.Title),
 	}, nil
 }
 
@@ -377,6 +386,18 @@ func (i *Instance) setStarted(v bool) {
 	}
 }
 
+// getLogger returns a per-instance slog.Logger tagged with
+// subsystem=instance and title=<title>. Falls back to log.For for
+// instances constructed directly without going through
+// NewInstance/FromInstanceData (primarily tests). Safe to call before
+// log.Initialize — log.For returns a no-op logger in that case.
+func (i *Instance) getLogger() *slog.Logger {
+	if i.logger != nil {
+		return i.logger
+	}
+	return log.For("instance", "title", i.Title)
+}
+
 // reserveStart atomically reserves the right to run Start() setup. Returns
 // true if the caller acquired the reservation and must proceed; false if the
 // instance is already started or a concurrent Start is in progress. Pairs
@@ -415,7 +436,18 @@ func (i *Instance) SetSelectedBranch(branch string) {
 }
 
 // firstTimeSetup is true if this is a new instance. Otherwise, it's one loaded from storage.
-func (i *Instance) Start(firstTimeSetup bool) error {
+func (i *Instance) Start(firstTimeSetup bool) (err error) {
+	lg := i.getLogger()
+	t0 := time.Now()
+	lg.Debug("instance.start.begin", "first_time", firstTimeSetup)
+	defer func() {
+		args := []any{"duration_ms", time.Since(t0).Milliseconds(), "first_time", firstTimeSetup}
+		if err != nil {
+			args = append(args, "err", err.Error())
+		}
+		lg.Debug("instance.start.end", args...)
+	}()
+
 	if i.Title == "" {
 		return fmt.Errorf("instance title cannot be empty")
 	}
@@ -515,7 +547,18 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 }
 
 // Kill terminates the instance and cleans up all resources
-func (i *Instance) Kill() error {
+func (i *Instance) Kill() (err error) {
+	lg := i.getLogger()
+	t0 := time.Now()
+	lg.Debug("instance.kill.begin")
+	defer func() {
+		args := []any{"duration_ms", time.Since(t0).Milliseconds()}
+		if err != nil {
+			args = append(args, "err", err.Error())
+		}
+		lg.Debug("instance.kill.end", args...)
+	}()
+
 	// Snapshot handles under lock and clear the started flag up-front so a
 	// concurrent or repeated Kill bails out before touching the same
 	// resources twice. Resource cleanup (tmux Close / worktree Cleanup) is
@@ -710,7 +753,18 @@ func (i *Instance) TmuxAlive() bool {
 // Pause stops the tmux session and removes the worktree, preserving the branch.
 // If saveState is non-nil, it is called after committing changes and marking the
 // instance as Paused, providing a checkpoint that reduces the crash inconsistency window.
-func (i *Instance) Pause(saveState func() error) error {
+func (i *Instance) Pause(saveState func() error) (err error) {
+	lg := i.getLogger()
+	t0 := time.Now()
+	lg.Debug("instance.pause.begin")
+	defer func() {
+		args := []any{"duration_ms", time.Since(t0).Milliseconds()}
+		if err != nil {
+			args = append(args, "err", err.Error())
+		}
+		lg.Debug("instance.pause.end", args...)
+	}()
+
 	if i.IsWorkspaceTerminal {
 		return fmt.Errorf("cannot pause workspace terminal")
 	}
@@ -759,7 +813,7 @@ func (i *Instance) Pause(saveState func() error) error {
 		// Prune stale worktree references. This is non-critical — the worktree
 		// is already removed, so don't abort the pause if prune fails.
 		if err := gw.Prune(); err != nil {
-			log.ErrorLog.Printf("failed to prune git worktrees (non-critical): %v", err)
+			lg.Warn("instance.prune.failed", "err", err.Error())
 		}
 	}
 
@@ -782,7 +836,18 @@ func (i *Instance) Pause(saveState func() error) error {
 // Resume recreates the worktree and restarts the tmux session.
 // If saveState is non-nil, it is called after the instance is Running,
 // providing a checkpoint that reduces the crash inconsistency window.
-func (i *Instance) Resume(saveState func() error) error {
+func (i *Instance) Resume(saveState func() error) (err error) {
+	lg := i.getLogger()
+	t0 := time.Now()
+	lg.Debug("instance.resume.begin")
+	defer func() {
+		args := []any{"duration_ms", time.Since(t0).Milliseconds()}
+		if err != nil {
+			args = append(args, "err", err.Error())
+		}
+		lg.Debug("instance.resume.end", args...)
+	}()
+
 	if i.IsWorkspaceTerminal {
 		return fmt.Errorf("cannot resume workspace terminal")
 	}

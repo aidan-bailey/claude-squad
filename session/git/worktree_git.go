@@ -78,13 +78,20 @@ func (g *GitWorktree) runGitCommand(path string, args ...string) (string, error)
 	baseArgs := []string{"-C", path}
 	c := exec.CommandContext(ctx, "git", append(baseArgs, args...)...)
 
+	t0 := time.Now()
 	output, err := g.runner.CombinedOutput(c)
 	if ctx.Err() == context.DeadlineExceeded {
+		log.DebugKV("git.cmd.timeout", "cmd", strings.Join(args, " "), "path", path, "timeout_ms", gitTimeout.Milliseconds())
 		return "", fmt.Errorf("git command timed out after %s: git %s", gitTimeout, strings.Join(args, " "))
 	}
 	if err != nil {
+		// Debug because many callers intentionally ignore "branch not found" /
+		// "worktree doesn't exist" errors. Elevating to Warn would spam. Callers
+		// that want Warn/Error semantics do so at their layer.
+		log.DebugKV("git.cmd.failed", "cmd", strings.Join(args, " "), "path", path, "duration_ms", time.Since(t0).Milliseconds(), "err", err.Error(), "output", strings.TrimSpace(string(output)))
 		return "", fmt.Errorf("git command failed: %s (%w)", output, err)
 	}
+	log.DebugKV("git.cmd.ok", "cmd", strings.Join(args, " "), "path", path, "duration_ms", time.Since(t0).Milliseconds())
 
 	return string(output), nil
 }
