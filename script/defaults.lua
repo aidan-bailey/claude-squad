@@ -47,11 +47,14 @@ cs.bind("home",       function() cs.actions.scroll_top() end,       { help = "sc
 cs.bind("end",        function() cs.actions.scroll_bottom() end,    { help = "scroll bottom" })
 cs.bind("ctrl+u",     function() cs.actions.scroll_page_up() end)
 cs.bind("ctrl+d",     function() cs.actions.scroll_page_down() end)
+cs.bind("shift+up",   function() cs.actions.scroll_line_up() end,   { help = "scroll line up" })
+cs.bind("shift+down", function() cs.actions.scroll_line_down() end, { help = "scroll line down" })
 
 -- Explicit terminal scroll — bypasses the active-pane rule so the user
--- can review terminal history while the agent pane stays focused.
-cs.bind("ctrl+pgup",   function() cs.actions.scroll_terminal_page_up() end)
-cs.bind("ctrl+pgdown", function() cs.actions.scroll_terminal_page_down() end)
+-- can review terminal history while the agent pane stays focused. Matches
+-- the alt+a / alt+t "alt = terminal-aware" convention.
+cs.bind("alt+pgup",   function() cs.actions.scroll_terminal_page_up() end)
+cs.bind("alt+pgdown", function() cs.actions.scroll_terminal_page_down() end)
 
 -- List navigation. Capital K/J page the session list; g/G jump to ends.
 cs.bind("K", function() cs.actions.list_page_up() end,   { help = "list page up" })
