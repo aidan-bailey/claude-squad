@@ -19,6 +19,14 @@ const gitTimeout = 8 * time.Second
 // gitNetworkTimeout applies to commands that talk to a remote (push/sync/fetch).
 const gitNetworkTimeout = 30 * time.Second
 
+// gitOkEvery rate-limits the `git.cmd.ok` debug record. runGitCommand fires
+// on every git invocation — metadata ticks alone emit many per second — so an
+// un-gated debug trace swamps the log at --log-level=debug. The timer lets one
+// success record through per window so operators can still confirm git is
+// running, without floods. Failures and timeouts bypass this gate because they
+// are rare and diagnostic.
+var gitOkEvery = log.NewEvery(5 * time.Second)
+
 // FetchBranches fetches and prunes remote-tracking branches (best-effort, won't fail if offline).
 // Pass nil for runner to use the default subprocess runner.
 func FetchBranches(repoPath string, runner CommandRunner) {
@@ -91,7 +99,9 @@ func (g *GitWorktree) runGitCommand(path string, args ...string) (string, error)
 		log.For("git").Debug("git.cmd.failed", "cmd", strings.Join(args, " "), "path", path, "duration_ms", time.Since(t0).Milliseconds(), "err", err.Error(), "output", strings.TrimSpace(string(output)))
 		return "", fmt.Errorf("git command failed: %s (%w)", output, err)
 	}
-	log.For("git").Debug("git.cmd.ok", "cmd", strings.Join(args, " "), "path", path, "duration_ms", time.Since(t0).Milliseconds())
+	if gitOkEvery.ShouldLog() {
+		log.For("git").Debug("git.cmd.ok", "cmd", strings.Join(args, " "), "path", path, "duration_ms", time.Since(t0).Milliseconds())
+	}
 
 	return string(output), nil
 }
