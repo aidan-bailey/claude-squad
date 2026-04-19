@@ -5,7 +5,44 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+// ensureUntrackedStaged guards `git add -N .` behind a cached untracked-file
+// probe. When the cache reports "no untracked files" inside the TTL we skip
+// the ls-files subprocess entirely; otherwise we run it, refresh the cache,
+// and stage if anything is reported. Callers (Diff, DiffShortStat) use this
+// to avoid running 2-3 git subprocesses per diff call in the steady state.
+//
+// now is injected so tests can pin the clock without touching time.Now().
+func (g *GitWorktree) ensureUntrackedStaged(now func() time.Time) error {
+	g.untrackedCacheMu.Lock()
+	fresh := !g.untrackedCheckedAt.IsZero() &&
+		now().Sub(g.untrackedCheckedAt) < untrackedCacheTTL &&
+		!g.untrackedHadAny
+	g.untrackedCacheMu.Unlock()
+	if fresh {
+		return nil
+	}
+
+	untrackedOutput, err := g.runGitCommand(g.worktreePath, "ls-files", "--others", "--exclude-standard")
+	if err != nil {
+		return err
+	}
+	hadUntracked := strings.TrimSpace(untrackedOutput) != ""
+
+	g.untrackedCacheMu.Lock()
+	g.untrackedCheckedAt = now()
+	g.untrackedHadAny = hadUntracked
+	g.untrackedCacheMu.Unlock()
+
+	if hadUntracked {
+		if _, err := g.runGitCommand(g.worktreePath, "add", "-N", "."); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // DiffStats holds statistics about the changes in a diff
 type DiffStats struct {
@@ -101,18 +138,9 @@ func (g *GitWorktree) DiffShortStat() *DiffStats {
 		return stats
 	}
 
-	// Guard git add -N with untracked file check (same as Diff)
-	untrackedOutput, err := g.runGitCommand(g.worktreePath, "ls-files", "--others", "--exclude-standard")
-	if err != nil {
+	if err := g.ensureUntrackedStaged(time.Now); err != nil {
 		stats.Error = err
 		return stats
-	}
-	if strings.TrimSpace(untrackedOutput) != "" {
-		_, err = g.runGitCommand(g.worktreePath, "add", "-N", ".")
-		if err != nil {
-			stats.Error = err
-			return stats
-		}
 	}
 
 	content, err := g.runGitCommand(g.worktreePath, "--no-pager", "diff", "--shortstat", g.GetBaseCommitSHA())
@@ -150,19 +178,9 @@ func (g *GitWorktree) Diff() *DiffStats {
 		return stats
 	}
 
-	// Only run `git add -N .` when there are untracked files, to avoid
-	// unnecessary index writes that could interfere with the agent.
-	untrackedOutput, err := g.runGitCommand(g.worktreePath, "ls-files", "--others", "--exclude-standard")
-	if err != nil {
+	if err := g.ensureUntrackedStaged(time.Now); err != nil {
 		stats.Error = err
 		return stats
-	}
-	if strings.TrimSpace(untrackedOutput) != "" {
-		_, err = g.runGitCommand(g.worktreePath, "add", "-N", ".")
-		if err != nil {
-			stats.Error = err
-			return stats
-		}
 	}
 
 	content, err := g.runGitCommand(g.worktreePath, "--no-pager", "diff", g.GetBaseCommitSHA())

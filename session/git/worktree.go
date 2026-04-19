@@ -6,6 +6,7 @@ import (
 	"claude-squad/log"
 	"fmt"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -48,7 +49,24 @@ type GitWorktree struct {
 	configDir string
 	// runner executes git/gh subprocesses; injected so tests can mock them.
 	runner CommandRunner
+
+	// untrackedCacheMu guards the fields below. The cache short-circuits
+	// `git ls-files --others --exclude-standard` on back-to-back Diff
+	// calls — that subprocess runs on every metadata tick and is pure
+	// overhead once we know there are no new untracked files.
+	untrackedCacheMu sync.Mutex
+	// untrackedCheckedAt is zero when no check has been recorded.
+	untrackedCheckedAt time.Time
+	// untrackedHadAny is the result of the most recent ls-files probe.
+	untrackedHadAny bool
 }
+
+// untrackedCacheTTL caps how long an untracked-file check is trusted.
+// Short enough that newly-created files appear in diff stats within a few
+// ticks; long enough to skip the ls-files subprocess on the majority of
+// metadata ticks. Tests rewind the cache timestamp directly rather than
+// tightening this value.
+var untrackedCacheTTL = 2 * time.Second
 
 func defaultRunner(r CommandRunner) CommandRunner {
 	if r == nil {
