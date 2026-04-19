@@ -1,8 +1,8 @@
 package script
 
 import (
-	"claude-squad/session"
 	"fmt"
+	"github.com/aidan-bailey/loom/session"
 
 	lua "github.com/yuin/gopher-lua"
 )
@@ -136,7 +136,7 @@ func ctxNewInstance(L *lua.LState) int {
 
 // ctxLog routes script log output through the engine's buffered log
 // channel so messages appear in the app's logs/ directory alongside
-// claude-squad's own log records.
+// loom's own log records.
 func ctxLog(L *lua.LState) int {
 	c := checkCtx(L, 1)
 	level := L.CheckString(2)

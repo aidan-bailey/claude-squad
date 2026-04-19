@@ -1,6 +1,6 @@
 # Scripting
 
-Claude Squad ships an embedded Lua runtime that owns the entire default-state keymap. The stock hotkeys (`n`, `D`, `p`, `c`, `r`, `?`, `q`, arrow keys, workspace nav, attach/quick-input, etc.) live in `script/defaults.lua`, baked into the binary via `go:embed` and loaded before any user script. Users author additional bindings or replacement defaults in `~/.claude-squad/scripts/*.lua`; those load after defaults and can override any binding except `ctrl+c` (panic-exit backstop). The runtime is a hard allow-list sandbox and is single-threaded under a mutex.
+Loom ships an embedded Lua runtime that owns the entire default-state keymap. The stock hotkeys (`n`, `D`, `p`, `c`, `r`, `?`, `q`, arrow keys, workspace nav, attach/quick-input, etc.) live in `script/defaults.lua`, baked into the binary via `go:embed` and loaded before any user script. Users author additional bindings or replacement defaults in `~/.loom/scripts/*.lua`; those load after defaults and can override any binding except `ctrl+c` (panic-exit backstop). The runtime is a hard allow-list sandbox and is single-threaded under a mutex.
 
 The implementation is Lua 5.1 via [`github.com/yuin/gopher-lua`](https://github.com/yuin/gopher-lua), vendored in `vendor/github.com/yuin/gopher-lua`.
 
@@ -97,10 +97,10 @@ end, { help = "say hello" })
 
 ## Directory Layout
 
-Scripts are **always global** — stored at `~/.claude-squad/scripts/`, not inside a workspace's `.claude-squad/scripts/`. Defaults live inside the binary.
+Scripts are **always global** — stored at `~/.loom/scripts/`, not inside a workspace's `.loom/scripts/`. Defaults live inside the binary.
 
 ```
-~/.claude-squad/
+~/.loom/
 ├── config.json
 ├── state.json
 ├── workspaces.json
@@ -122,10 +122,10 @@ Three layers guard against a broken script locking the user out of the TUI.
 
 ### `--no-scripts` CLI flag
 
-Passing `--no-scripts` to `claude-squad` skips the user-scripts directory entirely; only the embedded defaults load. Use it to recover from a script that crashes the TUI on startup:
+Passing `--no-scripts` to `loom` skips the user-scripts directory entirely; only the embedded defaults load. Use it to recover from a script that crashes the TUI on startup:
 
 ```bash
-claude-squad --no-scripts
+loom --no-scripts
 ```
 
 Source: `main.go:269` wires the flag, `app/app.go:186` stores it as `skipScripts`, `app/app_scripts.go:211` skips the `engine.Load(dir)` call when set.
@@ -141,7 +141,7 @@ Scope caveat: the script engine is only consulted from `stateDefault`. Other sta
 
 ### Parse-error fallback
 
-A user script that fails to compile is logged (to `$TMPDIR/claudesquad.log`) and skipped. Other scripts in the directory continue to load. Defaults remain live. The user sees the error in the log file on next inspection; they are not blocked from launching the TUI.
+A user script that fails to compile is logged (to `~/.loom/logs/loom.log`) and skipped. Other scripts in the directory continue to load. Defaults remain live. The user sees the error in the log file on next inspection; they are not blocked from launching the TUI.
 
 ## Security
 
@@ -181,7 +181,7 @@ All host objects (`session.Instance`, `git.GitWorktree`, `ctx`) are exposed as o
 
 ### Untrusted Scripts
 
-Scripts are user-provided, not downloaded. The sandbox protects against an author's *mistake* (e.g. accidentally calling a destructive API in a wide-matching handler) rather than a malicious script — a malicious script can still kill every instance, spam the log, or consume CPU. Users should treat `~/.claude-squad/scripts/` the same way they treat `~/.bashrc`.
+Scripts are user-provided, not downloaded. The sandbox protects against an author's *mistake* (e.g. accidentally calling a destructive API in a wide-matching handler) rather than a malicious script — a malicious script can still kill every instance, spam the log, or consume CPU. Users should treat `~/.loom/scripts/` the same way they treat `~/.bashrc`.
 
 ## API Reference
 
@@ -446,7 +446,7 @@ Script log output via `cs.log` / `ctx:log` is buffered and drained asynchronousl
 
 ## Example Scripts
 
-Three reference scripts ship in `script/testdata/`. Copy to `~/.claude-squad/scripts/` to activate.
+Three reference scripts ship in `script/testdata/`. Copy to `~/.loom/scripts/` to activate.
 
 - `push_message.lua` — push the selected branch with a timestamped commit.
 - `resume_all.lua` — resume every paused session.
@@ -462,7 +462,7 @@ Three reference scripts ship in `script/testdata/`. Copy to `~/.claude-squad/scr
 | `script/api.go` | Installs the `cs` global (`bind`, `unbind`, `register_action`, `log`, `notify`, `now`, `sprintf`, `await`). |
 | `script/api_actions.go` | Installs `cs.actions.*` (sync + deferred primitives). |
 | `script/intent.go` | Deferred Intent types consumed by the app. |
-| `script/loader.go` | Walks `~/.claude-squad/scripts/`, runs each `.lua` file under `loading=true`. |
+| `script/loader.go` | Walks `~/.loom/scripts/`, runs each `.lua` file under `loading=true`. |
 | `script/host.go` | The `Host` interface. |
 | `script/userdata_ctx.go` | `ctx` userdata metatable and methods. |
 | `script/userdata_instance.go` | `instance` userdata metatable and methods. |
@@ -476,7 +476,7 @@ Three reference scripts ship in `script/testdata/`. Copy to `~/.claude-squad/scr
 
 **Lua, not JS/Python/a custom DSL.** `gopher-lua` is pure Go (no cgo, matches our `CGO_ENABLED=0` build), small, and embeddable with a single import. Lua 5.1's surface is small enough that a new user can skim the API reference and be productive; a bigger language would make the sandbox audit hard to keep honest.
 
-**Defaults live in Lua, not Go.** Before the migration, built-in hotkeys were a Go `ActionRegistry` that users could not touch. Since every default now goes through `cs.bind`, users customize by editing a file in `~/.claude-squad/scripts/` rather than forking and recompiling. The engine codepath is identical for defaults and user scripts — there is no special "built-in" tier.
+**Defaults live in Lua, not Go.** Before the migration, built-in hotkeys were a Go `ActionRegistry` that users could not touch. Since every default now goes through `cs.bind`, users customize by editing a file in `~/.loom/scripts/` rather than forking and recompiling. The engine codepath is identical for defaults and user scripts — there is no special "built-in" tier.
 
 **Scripts are global, not per-workspace.** Users think of custom keybindings as personal ergonomics, not project-specific config. A script that pushes branches or spawns review sessions should work across every repo the user opens.
 

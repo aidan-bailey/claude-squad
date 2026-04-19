@@ -1,5 +1,5 @@
 -- Sample script: spawn a new session with a pre-filled prompt.
--- Copy to ~/.claude-squad/scripts/ to activate.
+-- Copy to ~/.loom/scripts/ to activate.
 
 cs.register_action{
   key = "ctrl+shift+n",

@@ -1,6 +1,6 @@
 -- Sample script: push the selected session's branch with a
 -- timestamped commit message.
--- Copy to ~/.claude-squad/scripts/ to activate.
+-- Copy to ~/.loom/scripts/ to activate.
 
 cs.register_action{
   key = "ctrl+shift+p",

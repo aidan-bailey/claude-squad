@@ -1,5 +1,5 @@
 -- Sample script: resume every paused session.
--- Copy to ~/.claude-squad/scripts/ to activate.
+-- Copy to ~/.loom/scripts/ to activate.
 
 cs.register_action{
   key = "ctrl+shift+r",

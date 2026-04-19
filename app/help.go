@@ -1,12 +1,12 @@
 package app
 
 import (
-	"claude-squad/keys"
-	"claude-squad/log"
-	"claude-squad/session"
-	"claude-squad/ui"
-	"claude-squad/ui/overlay"
 	"fmt"
+	"github.com/aidan-bailey/loom/keys"
+	"github.com/aidan-bailey/loom/log"
+	"github.com/aidan-bailey/loom/session"
+	"github.com/aidan-bailey/loom/ui"
+	"github.com/aidan-bailey/loom/ui/overlay"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -129,7 +129,7 @@ var (
 
 func (h helpTypeGeneral) toContent() string {
 	sections := []string{
-		titleStyle.Render("Claude Squad"),
+		titleStyle.Render("Loom"),
 		"",
 		"A terminal UI that manages multiple Claude Code (and other local agents) in separate workspaces.",
 		"",

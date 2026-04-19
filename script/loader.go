@@ -4,7 +4,7 @@ import (
 	_ "embed"
 	"fmt"
 
-	"claude-squad/log"
+	"github.com/aidan-bailey/loom/log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -38,7 +38,7 @@ func (e *Engine) LoadDefaults() {
 //
 // Error policy: a broken file logs a warning and does not prevent
 // subsequent files from loading. A missing directory is a silent
-// no-op so a user who never creates ~/.claude-squad/scripts sees
+// no-op so a user who never creates ~/.loom/scripts sees
 // nothing unusual.
 func loadScripts(e *Engine, dir string) {
 	if dir == "" {

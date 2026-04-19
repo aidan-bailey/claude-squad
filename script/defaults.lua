@@ -1,5 +1,5 @@
 -- defaults.lua: stock keymap baked into the binary via go:embed.
--- Loaded before user scripts in ~/.claude-squad/scripts/; users can
+-- Loaded before user scripts in ~/.loom/scripts/; users can
 -- override any binding with cs.unbind + cs.bind (or just cs.bind,
 -- which overwrites). Handlers are wrapped in lambdas so deferred
 -- primitives yield inside a Lua-level coroutine frame.

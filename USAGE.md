@@ -1,6 +1,6 @@
 # USAGE.md
 
-A comprehensive guide to using Claude Squad — the terminal UI for managing multiple AI coding agents in parallel.
+A comprehensive guide to using Loom — the terminal UI for managing multiple AI coding agents in parallel.
 
 ## Table of Contents
 
@@ -19,7 +19,7 @@ A comprehensive guide to using Claude Squad — the terminal UI for managing mul
 
 ## Overview
 
-Claude Squad lets you run multiple AI coding agents (Claude Code, Aider, Codex, Amp) simultaneously, each in its own isolated git worktree and tmux session. You can create sessions, watch agents work in real time, review diffs, pause/resume sessions, and push completed work — all from a single terminal interface.
+Loom lets you run multiple AI coding agents (Claude Code, Aider, Codex, Amp) simultaneously, each in its own isolated git worktree and tmux session. You can create sessions, watch agents work in real time, review diffs, pause/resume sessions, and push completed work — all from a single terminal interface.
 
 ### Core Concepts
 
@@ -38,10 +38,10 @@ Claude Squad lets you run multiple AI coding agents (Claude Code, Aider, Codex, 
 
 ```bash
 # Build
-CGO_ENABLED=0 go build -o claude-squad
+CGO_ENABLED=0 go build -o loom
 
 # Run (from any git repository)
-./claude-squad
+./loom
 
 # Or with Nix
 nix run .
@@ -49,7 +49,7 @@ nix run .
 
 ### First Session in 30 Seconds
 
-1. Launch `claude-squad` from a git repository
+1. Launch `loom` from a git repository
 2. Press `n` to create a new session
 3. Type a name and press `Enter`
 4. The agent starts in an isolated worktree — watch its output in the **Agent** pane
@@ -153,7 +153,7 @@ A session moves through these states:
 ### What Happens at Each Stage
 
 **Ready → Loading → Running** (on creation):
-1. Git worktree created at `~/.claude-squad/worktrees/{name}_{timestamp}`
+1. Git worktree created at `~/.loom/worktrees/{name}_{timestamp}`
 2. New branch created: `{branch_prefix}{session_title}` (default prefix: `username/`)
 3. Base commit SHA recorded (used as the baseline for diffs)
 4. Tmux session launched running the configured program
@@ -346,8 +346,8 @@ Each workspace tab shows only the sessions for that repository.
 ### Usage
 
 ```
-claude-squad [flags]
-claude-squad [command]
+loom [flags]
+loom [command]
 ```
 
 ### Flags
@@ -384,26 +384,26 @@ claude-squad [command]
 
 ```bash
 # Run with a specific agent
-claude-squad -p "aider --model ollama_chat/gemma3:1b"
+loom -p "aider --model ollama_chat/gemma3:1b"
 
 # Run with auto-yes in a specific workspace
-claude-squad -y -w my-project
+loom -y -w my-project
 
 # Register current directory as a workspace
-claude-squad workspace add
+loom workspace add
 
 # Register a specific path with a custom name
-claude-squad workspace add --name backend ~/projects/api-server
+loom workspace add --name backend ~/projects/api-server
 
 # Check how many sessions are running
-claude-squad workspace status my-project
+loom workspace status my-project
 ```
 
 ---
 
 ## Configuration
 
-Configuration is stored in `~/.claude-squad/config.json` (or per-workspace at `<repo>/.claude-squad/config.json`).
+Configuration is stored in `~/.loom/config.json` (or per-workspace at `<repo>/.loom/config.json`).
 
 ### Options
 
@@ -442,24 +442,24 @@ When `default_program` matches a profile name, that profile's `program` command 
 
 | Variable | Description |
 |----------|-------------|
-| `CLAUDE_SQUAD_HOME` | Override the config directory (default: `~/.claude-squad`). Must be an absolute path; supports `~` expansion. |
+| `LOOM_HOME` | Override the config directory (default: `~/.loom`). Must be an absolute path; supports `~` expansion. |
 
 ---
 
 ## Workspaces
 
-Workspaces provide per-repository isolation. Each workspace gets its own config, state, and session storage inside the repository at `<repo>/.claude-squad/`.
+Workspaces provide per-repository isolation. Each workspace gets its own config, state, and session storage inside the repository at `<repo>/.loom/`.
 
 ### Directory Structure
 
 ```
-~/.claude-squad/                     ← Global (fallback)
+~/.loom/                     ← Global (fallback)
   config.json
   state.json
   workspaces.json                    ← Workspace registry
   worktrees/
 
-~/projects/my-app/.claude-squad/     ← Workspace-scoped
+~/projects/my-app/.loom/     ← Workspace-scoped
   config.json                        ← Overrides global config
   state.json                         ← This workspace's sessions
   worktrees/
@@ -467,10 +467,10 @@ Workspaces provide per-repository isolation. Each workspace gets its own config,
 
 ### Auto-Detection
 
-When you run `claude-squad` from a directory:
+When you run `loom` from a directory:
 1. The registry is checked for a workspace matching the current path
 2. If found, that workspace's config directory is used
-3. If not found, the global `~/.claude-squad/` directory is used
+3. If not found, the global `~/.loom/` directory is used
 
 Use `--workspace <name>` to explicitly select a workspace regardless of your current directory.
 
@@ -486,11 +486,11 @@ If you have existing sessions in the global directory and want to move them to w
 
 ```bash
 # First register your workspaces
-claude-squad workspace add ~/projects/frontend
-claude-squad workspace add ~/projects/backend
+loom workspace add ~/projects/frontend
+loom workspace add ~/projects/backend
 
 # Then migrate — matches instances by repo path
-claude-squad workspace migrate
+loom workspace migrate
 ```
 
 Instances are matched to workspaces by their repository path. Unmatched instances remain in global storage.
@@ -505,7 +505,7 @@ Auto-yes mode uses a background daemon to automatically accept agent prompts (e.
 
 ```bash
 # Via CLI flag
-claude-squad --autoyes
+loom --autoyes
 
 # Via config
 # Set "auto_yes": true in config.json
@@ -532,5 +532,5 @@ Trust prompts (e.g. "Do you trust the files in this folder?") are handled separa
 
 - **Starts** when the TUI launches with auto-yes enabled
 - **Runs** in the background as a separate process (PID stored in `{configDir}/daemon.pid`)
-- **Stops** when the TUI exits, or manually via `claude-squad reset`
+- **Stops** when the TUI exits, or manually via `loom reset`
 - Any running daemon is killed and restarted on each TUI launch to ensure a clean state

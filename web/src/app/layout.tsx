@@ -20,20 +20,20 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: "Claude Squad - Manage Multiple AI Code Assistants",
-  description: "A terminal app that manages multiple AI code assistants (Claude Code, Codex, Aider, etc.) in separate workspaces, allowing you to work on multiple tasks simultaneously.",
-  keywords: ["claude", "claude squad", "ai", "code assistant", "terminal", "tmux", "claude code", "codex", "aider"],
-  authors: [{ name: "smtg-ai" }],
+  title: "Loom - Manage Multiple AI Coding Agents",
+  description: "A terminal app that manages multiple AI coding agents (Claude Code, Codex, Gemini, Aider) in separate workspaces, allowing you to work on multiple tasks simultaneously.",
+  keywords: ["loom", "ai", "coding agent", "terminal", "tmux", "claude code", "codex", "gemini", "aider"],
+  authors: [{ name: "aidan-bailey" }],
   openGraph: {
-    title: "Claude Squad",
-    description: "A terminal app that manages multiple AI code assistants in separate workspaces",
-    url: "https://github.com/smtg-ai/claude-squad",
+    title: "Loom",
+    description: "A terminal app that manages multiple AI coding agents in separate workspaces",
+    url: "https://github.com/aidan-bailey/loom",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "Claude Squad",
-    description: "A terminal app that manages multiple AI code assistants in separate workspaces",
+    title: "Loom",
+    description: "A terminal app that manages multiple AI coding agents in separate workspaces",
   },
 };
 

@@ -1,10 +1,10 @@
 package cmd
 
 import (
-	"claude-squad/config"
-	"claude-squad/session/git"
 	"encoding/json"
 	"fmt"
+	"github.com/aidan-bailey/loom/config"
+	"github.com/aidan-bailey/loom/session/git"
 	"os"
 	"path/filepath"
 	"text/tabwriter"
@@ -68,7 +68,7 @@ var workspaceListCmd = &cobra.Command{
 		}
 
 		if len(reg.Workspaces) == 0 {
-			fmt.Println("No workspaces registered. Use 'claude-squad workspace add' to register one.")
+			fmt.Println("No workspaces registered. Use 'loom workspace add' to register one.")
 			return nil
 		}
 
