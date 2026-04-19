@@ -1322,6 +1322,17 @@ func (m *home) activateWorkspace(ws config.Workspace) error {
 		if wtTitle == "" {
 			wtTitle = "Workspace Terminal"
 		}
+
+		// A prior non-clean exit may have left a tmux session named
+		// claudesquad_<wtTitle> alive without persisting the instance.
+		// Startup's CleanupOrphanedSessions is skipped in multi-tab
+		// restore mode, so the orphan survives here and Start below
+		// would fail with "session already exists", leaving an unusable
+		// entry in the list with no branch and no agent.
+		if err := session.KillTmuxSessionByTitle(wtTitle, cmdExec); err != nil {
+			log.For("app").Debug("workspace_terminal.orphan_kill", "workspace", ws.Name, "err", err.Error())
+		}
+
 		wtInstance, wtErr := session.NewInstance(session.InstanceOptions{
 			Title:               wtTitle,
 			Path:                wsCtx.RepoPath,
