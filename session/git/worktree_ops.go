@@ -19,6 +19,28 @@ import (
 // hint (kill-to-clean-up) instead of a generic setup error.
 var ErrBranchGone = errors.New("branch not found locally or on remote")
 
+// isWorktreeAbsentErr reports whether a `git worktree remove` failure
+// was simply "this worktree isn't registered anyway" — the expected,
+// no-op case during pre-setup cleanup. Any other failure (permissions,
+// locked index, disk error) is the operator's to see.
+func isWorktreeAbsentErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "is not a working tree") ||
+		strings.Contains(msg, "No such file or directory")
+}
+
+// isBranchAbsentErr reports whether a `git branch -D` failure was
+// simply "branch doesn't exist" — expected during pre-setup cleanup.
+func isBranchAbsentErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "not found")
+}
+
 // Setup creates a new worktree for the session
 func (g *GitWorktree) Setup() (err error) {
 	t0 := time.Now()
@@ -59,8 +81,13 @@ func (g *GitWorktree) Setup() (err error) {
 func (g *GitWorktree) setupFromExistingBranch() error {
 	// Directory already created in Setup(), skip duplicate creation
 
-	// Clean up any existing worktree first
-	_, _ = g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath) // Ignore error if worktree doesn't exist
+	// Clean up any existing worktree first. "Not a working tree" is the
+	// normal case (nothing to remove); any other failure — lockfile,
+	// permissions — should surface so the next `worktree add` doesn't
+	// fail cryptically with a stale registration in the way.
+	if _, err := g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath); err != nil && !isWorktreeAbsentErr(err) {
+		log.WarnKV("git.worktree_cleanup_failed", "path", g.worktreePath, "err", err.Error())
+	}
 
 	// Check if the local branch exists
 	_, localErr := g.runGitCommand(g.repoPath, "show-ref", "--verify", fmt.Sprintf("refs/heads/%s", g.branchName))
@@ -97,11 +124,20 @@ func (g *GitWorktree) setupFromExistingBranch() error {
 
 // setupNewWorktree creates a new worktree from HEAD
 func (g *GitWorktree) setupNewWorktree() error {
-	// Clean up any existing worktree first
-	_, _ = g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath) // Ignore error if worktree doesn't exist
+	// Clean up any existing worktree first. Absent-worktree is the
+	// common case during fresh session setup; any other failure
+	// (permissions, lockfile) would otherwise silently poison the
+	// subsequent `worktree add`.
+	if _, err := g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath); err != nil && !isWorktreeAbsentErr(err) {
+		log.WarnKV("git.worktree_cleanup_failed", "path", g.worktreePath, "err", err.Error())
+	}
 
-	// Clean up any existing branch using git CLI (much faster than go-git PlainOpen)
-	_, _ = g.runGitCommand(g.repoPath, "branch", "-D", g.branchName) // Ignore error if branch doesn't exist
+	// Clean up any existing branch using git CLI (much faster than go-git PlainOpen).
+	// Absent-branch is expected; anything else (e.g. branch is checked
+	// out elsewhere) is operator-visible territory.
+	if _, err := g.runGitCommand(g.repoPath, "branch", "-D", g.branchName); err != nil && !isBranchAbsentErr(err) {
+		log.WarnKV("git.branch_cleanup_failed", "branch", g.branchName, "err", err.Error())
+	}
 
 	output, err := g.runGitCommand(g.repoPath, "rev-parse", "HEAD")
 	if err != nil {
