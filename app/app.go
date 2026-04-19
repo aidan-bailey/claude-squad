@@ -41,8 +41,20 @@ var statusLineStyle = lipgloss.NewStyle().
 // noScripts disables loading of ~/.claude-squad/scripts (embedded
 // defaults still load).
 func Run(ctx context.Context, wsCtx *config.WorkspaceContext, registry *config.WorkspaceRegistry, appConfig *config.Config, program string, autoYes bool, pendingDir string, noScripts bool) error {
+	h := newHome(ctx, wsCtx, registry, appConfig, program, autoYes, pendingDir, noScripts)
+	// Shutdown hook: drain any suspended script coroutines then close
+	// the Lua state. The engine's "every coroutine gets resumed" contract
+	// would otherwise be violated on process exit — including on the
+	// QuitIntent path where tea.Batch does not sequence scriptResumeMsg
+	// before tea.QuitMsg, so the awaiting coroutine can be stranded.
+	defer func() {
+		if h.scripts != nil {
+			h.scripts.CleanupAllCoroutines()
+			h.scripts.Close()
+		}
+	}()
 	p := tea.NewProgram(
-		newHome(ctx, wsCtx, registry, appConfig, program, autoYes, pendingDir, noScripts),
+		h,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(), // Mouse scroll
 	)
