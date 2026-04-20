@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/aidan-bailey/loom/config"
 	internalexec "github.com/aidan-bailey/loom/internal/exec"
@@ -9,6 +10,13 @@ import (
 	"github.com/aidan-bailey/loom/session/tmux"
 	"time"
 )
+
+// ErrInstanceNotFound signals that a storage mutation (delete, update)
+// referenced a title that is no longer persisted. Callers performing
+// idempotent cleanup — e.g. the kill path, where Kill() has already
+// destroyed tmux + worktree before DeleteInstance runs — can match it
+// with errors.Is to distinguish "already gone" from a real write error.
+var ErrInstanceNotFound = errors.New("instance not found")
 
 // CurrentSchemaVersion is the schema version written by the current
 // binary. Any on-disk InstanceData with a lower SchemaVersion is routed
@@ -156,7 +164,7 @@ func (s *Storage) DeleteInstance(title string) error {
 	}
 
 	if !found {
-		return fmt.Errorf("instance not found: %s", title)
+		return fmt.Errorf("%w: %s", ErrInstanceNotFound, title)
 	}
 
 	return s.saveInstanceData(filtered)
@@ -182,7 +190,7 @@ func (s *Storage) UpdateInstance(instance *Instance) error {
 	}
 
 	if !found {
-		return fmt.Errorf("instance not found: %s", snap.Title)
+		return fmt.Errorf("%w: %s", ErrInstanceNotFound, snap.Title)
 	}
 
 	return s.saveInstanceData(data)

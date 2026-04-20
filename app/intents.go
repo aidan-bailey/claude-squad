@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"github.com/aidan-bailey/loom/config"
 	"github.com/aidan-bailey/loom/log"
@@ -197,8 +198,17 @@ func killActionFor(m *home, selected *session.Instance) (func(), tea.Cmd) {
 			log.For("app").Error("kill.instance_kill_failed", "title", title, "err", err)
 		}
 
+		// Past this point tmux + worktree + branch are gone. Reverting status
+		// on a storage error would leave a zombie in the list (Ready/Running
+		// with no backing resources); emit killInstanceMsg regardless so the
+		// UI matches reality. ErrInstanceNotFound just means storage already
+		// agreed, so it's a debug-level note rather than an error.
 		if err := m.storage.DeleteInstance(selected.Title); err != nil {
-			return transitionFailedMsg{title: title, op: "delete", previousStatus: previousStatus, err: err}
+			if errors.Is(err, session.ErrInstanceNotFound) {
+				log.For("app").Debug("kill.storage_already_absent", "title", title)
+			} else {
+				log.For("app").Error("kill.storage_delete_failed", "title", title, "err", err)
+			}
 		}
 
 		return killInstanceMsg{title: title}
