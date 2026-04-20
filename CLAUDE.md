@@ -30,9 +30,6 @@ gofmt -w .
 # Lint (CI uses golangci-lint v1.60.1)
 golangci-lint run --timeout=3m --fast
 
-# Version bump (updates main.go)
-./bump-version.sh <version>
-
 # Cleanup scripts
 ./clean.sh        # Kill tmux server, remove worktrees and ~/.loom/
 ./clean_hard.sh   # Same as clean.sh + git worktree prune
@@ -203,4 +200,4 @@ All stored in `~/.loom/`:
 GitHub Actions workflows in `.github/workflows/`:
 - **build.yml** — Build and test on push/PR to main (triggered by Go file changes)
 - **lint.yml** — golangci-lint on Go code changes
-- **release.yml** — Build and publish artifacts on version tags (`v*`)
+- **release.yml** — Auto-triggers on Build success on main (or `workflow_dispatch`). Reads `version` from `main.go`; skips if `v$VERSION` already exists on GitHub; otherwise tags, generates release notes from conventional commits via `git-cliff` (see `cliff.toml`), and runs GoReleaser to build/publish artifacts. To cut a release: bump the `version` string in `main.go`, regenerate `CHANGELOG.md` with `git cliff -o CHANGELOG.md --tag v$VERSION`, commit, and merge to main.
