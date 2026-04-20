@@ -4,6 +4,11 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 )
 
+// KeyName is the enum identifier used by the help panel and menu-bar
+// highlighter to refer to a built-in binding. It is NOT the dispatch
+// authority — that lives in script/defaults.lua, which can rebind any
+// key at will. KeyName values are stable across releases; binding
+// values in GlobalkeyBindings may change.
 type KeyName int
 
 const (
@@ -59,7 +64,12 @@ func KeyForString(s string) (KeyName, bool) {
 	return n, ok
 }
 
-// GlobalkeyBindings is a global, immutable map of KeyName tot keybinding.
+// GlobalkeyBindings is the global, immutable table of built-in
+// bindings used by the help panel and menu-bar highlighter. It mirrors
+// the defaults in script/defaults.lua — the Lua table is authoritative
+// for dispatch, this map is for UI rendering only. Keep the two in sync
+// when adding or changing a binding; the migration_parity_test.go guard
+// catches drift.
 var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyUp: key.NewBinding(
 		key.WithKeys("up", "k"),
