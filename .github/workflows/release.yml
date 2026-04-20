@@ -85,15 +85,10 @@ jobs:
           config: cliff.toml
           args: --latest --strip header
 
-      - name: Write release notes to file
-        env:
-          RELEASE_NOTES: ${{ steps.changelog.outputs.content }}
-        run: printf '%s' "$RELEASE_NOTES" > /tmp/release-notes.md
-
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
           version: latest
-          args: release --clean --release-notes=/tmp/release-notes.md
+          args: release --clean --release-notes=${{ steps.changelog.outputs.changelog }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
