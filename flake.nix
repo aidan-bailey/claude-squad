@@ -16,7 +16,7 @@
       ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
       nixpkgsFor = forAllSystems (system: import nixpkgs { inherit system; });
-      version = "0.1.0";
+      version = "0.1.1";
     in
     {
       packages = forAllSystems (

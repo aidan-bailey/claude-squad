@@ -1,3 +1,23 @@
+## [0.1.1] - 2026-04-22
+
+### 🚀 Features
+
+- *(session/files)* Add git-aware file listing package
+- *(ui/overlay)* Add fuzzy subsequence matcher
+- *(ui/overlay)* Add file explorer overlay
+- *(script)* Add toggle_file_explorer action and intent
+- *(app)* Wire file explorer overlay into state machine
+
+### 🐛 Bug Fixes
+
+- *(session,app)* Make storage deletion idempotent on kill path
+- *(app,ui)* Capture repo name before kill to prevent counter leak
+
+### ⚙️ Miscellaneous Tasks
+
+- *(release)* Pass changelog file path directly to goreleaser
+- *(ui)* Rebrand fallback splash from claude-squad to loom
+
 ## [0.1.0] - 2026-04-20
 
 ### 🐛 Bug Fixes
