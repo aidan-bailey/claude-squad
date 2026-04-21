@@ -1,7 +1,5 @@
 package ui
 
-import "github.com/charmbracelet/lipgloss"
-
 // Layout proportions used across the TUI. Keeping them centralized prevents
 // drift between app.go's sizing math and the component-level calculations.
 const (
@@ -24,17 +22,11 @@ const (
 
 // FallBackText is the ASCII splash rendered in empty-state panes when no
 // instance is selected or a newly created instance has not yet started.
-var FallBackText = lipgloss.JoinVertical(lipgloss.Center, `
-░█████╗░██╗░░░░░░█████╗░██╗░░░██╗██████╗░███████╗
-██╔══██╗██║░░░░░██╔══██╗██║░░░██║██╔══██╗██╔════╝
-██║░░╚═╝██║░░░░░███████║██║░░░██║██║░░██║█████╗░░
-██║░░██╗██║░░░░░██╔══██║██║░░░██║██║░░██║██╔══╝░░
-╚█████╔╝███████╗██║░░██║╚██████╔╝██████╔╝███████╗
-░╚════╝░╚══════╝╚═╝░░╚═╝░╚═════╝░╚═════╝░╚══════╝
-`, `
-░██████╗░██████╗░██╗░░░██╗░█████╗░██████╗░
-██╔════╝██╔═══██╗██║░░░██║██╔══██╗██╔══██╗
-╚█████╗░██║██╗██║██║░░░██║███████║██║░░██║
-░╚═══██╗╚██████╔╝██║░░░██║██╔══██║██║░░██║
-██████╔╝░╚═██╔═╝░╚██████╔╝██║░░██║██████╔╝
-`)
+var FallBackText = `
+██╗░░░░░░█████╗░░█████╗░███╗░░░███╗
+██║░░░░░██╔══██╗██╔══██╗████╗░████║
+██║░░░░░██║░░██║██║░░██║██╔████╔██║
+██║░░░░░██║░░██║██║░░██║██║╚██╔╝██║
+███████╗╚█████╔╝╚█████╔╝██║░╚═╝░██║
+╚══════╝░╚════╝░░╚════╝░╚═╝░░░░░╚═╝
+`
